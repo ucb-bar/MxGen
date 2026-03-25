@@ -1,0 +1,16 @@
+extends: ScalaModule
+scalaVersion: 2.13.12
+repositories:
+  - https://repo1.maven.org/maven2
+  - https://oss.sonatype.org/content/repositories/releases
+  - https://oss.sonatype.org/content/repositories/snapshots
+mvnDeps:
+  - org.chipsalliance::chisel:6.6.0
+scalacPluginMvnDeps:
+  - org.chipsalliance:chisel-plugin_2.13.12:6.6.0
+scalacOptions:
+  - -deprecation
+  - -feature
+  - -unchecked
+  - -language:reflectiveCalls
+mainClass: MxGen.Main
