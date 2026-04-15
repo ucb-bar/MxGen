@@ -2,9 +2,7 @@ package mxgen.hardfloatHelper
 
 import chisel3._
 import chisel3.util._
-import hardfloat._
-import freechips.rocketchip.util._
-import freechips.rocketchip.tile._
+import mxgen.hardfloat._
 
 //----------------------------------------------------------------------------
 //----------------------------------------------------------------------------

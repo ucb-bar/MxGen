@@ -2,9 +2,7 @@ package mxgen
 
 import chisel3._
 import chisel3.util._
-import hardfloat._
-import freechips.rocketchip.util._
-import freechips.rocketchip.tile._ 
+import mxgen.hardfloat._
 
 class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: MxFloat) extends Module with HasMxPEParameters {
   println("Creating MxFpMul with product precision: " + fpProductPrecision + " and acc precision: " + fpAccPrecision)
