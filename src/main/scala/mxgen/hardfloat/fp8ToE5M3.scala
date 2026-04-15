@@ -1,4 +1,4 @@
-package gemmini.hardfloatHelper
+package mxgen.hardfloatHelper
 
 import chisel3._
 import chisel3.util._

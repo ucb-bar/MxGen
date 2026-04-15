@@ -13,4 +13,4 @@ scalacOptions:
   - -feature
   - -unchecked
   - -language:reflectiveCalls
-mainClass: MxGen.Main
+mainClass: mxgen.Main

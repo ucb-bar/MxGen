@@ -35,7 +35,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 =============================================================================*/
 
-package sp26FPUnits.hardfloat
+package mxgen.hardfloat
 
 import chisel3._
 import chisel3.util.Fill
