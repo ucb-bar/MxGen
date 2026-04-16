@@ -40,43 +40,6 @@ object MxFormat {
   val fp8:     Set[MxFormat] = Set(FP8_E4M3, FP8_E5M2)
 }
 
-// -----------------------------------------------------------------------------
-// BUNDLES AND DECODING
-// -----------------------------------------------------------------------------
-
-class mxMode extends Bundle {
-  val actWidth = UInt(3.W)
-  val weiWidth = UInt(3.W) 
-  val weiInputs = UInt(3.W)
-  val actInputs = UInt(2.W)
-  val shift = Vec(2, Vec(2, UInt(3.W)))
-  val numOutputs = UInt(3.W)
-}
-
-class MxTypeBundle extends Bundle {
-  val exp = UInt(3.W)
-  val sig = UInt(3.W)
-}
-
-// -----------------------------------------------------------------------------
-// MODE DECODER
-// -----------------------------------------------------------------------------
-
-object mxModeDecode {
-  private def litTable = VecInit(MxPEParams.allModes.map { m =>
-    (new mxMode).Lit(
-      _.actWidth      -> m.actWidth.U,
-      _.weiWidth      -> m.weiWidth.U,
-      _.weiInputs     -> m.weiInputs.U,
-      _.actInputs     -> m.actInputs.U,
-      _.shift(0)(0)   -> m.shift(0)(0).U, _.shift(0)(1) -> m.shift(0)(1).U,
-      _.shift(1)(0)   -> m.shift(1)(0).U, _.shift(1)(1) -> m.shift(1)(1).U,
-      _.numOutputs    -> m.numOutputs.U
-    )
-  })
-  def apply(mode: UInt): mxMode = litTable(mode)
-}
-
 case class MxPEParams(
   actWidth: Int = 2,
   weiWidth: Int = 2,
@@ -263,6 +226,7 @@ case class MxConfig (
     if (s.size == 1) Some(s.head) else None
   }
 
+  // determines if we need mode and type selection at runtime
   val needsRuntimeActType: Boolean = actFormats.size > 1
   val needsRuntimeWeiType: Boolean = weiFormats.size > 1
   val needsRuntimeMode: Boolean = modesSupported.size > 1

@@ -3,6 +3,43 @@ package mxgen
 import chisel3._
 import chisel3.util._
 
+// -----------------------------------------------------------------------------
+// BUNDLES AND DECODING
+// -----------------------------------------------------------------------------
+
+class mxMode extends Bundle {
+  val actWidth = UInt(3.W)
+  val weiWidth = UInt(3.W) 
+  val weiInputs = UInt(3.W)
+  val actInputs = UInt(2.W)
+  val shift = Vec(2, Vec(2, UInt(3.W)))
+  val numOutputs = UInt(3.W)
+}
+
+class MxTypeBundle extends Bundle {
+  val exp = UInt(3.W)
+  val sig = UInt(3.W)
+}
+
+// -----------------------------------------------------------------------------
+// MODE DECODER
+// -----------------------------------------------------------------------------
+
+object mxModeDecode {
+  private def litTable = VecInit(MxPEParams.allModes.map { m =>
+    (new mxMode).Lit(
+      _.actWidth      -> m.actWidth.U,
+      _.weiWidth      -> m.weiWidth.U,
+      _.weiInputs     -> m.weiInputs.U,
+      _.actInputs     -> m.actInputs.U,
+      _.shift(0)(0)   -> m.shift(0)(0).U, _.shift(0)(1) -> m.shift(0)(1).U,
+      _.shift(1)(0)   -> m.shift(1)(0).U, _.shift(1)(1) -> m.shift(1)(1).U,
+      _.numOutputs    -> m.numOutputs.U
+    )
+  })
+  def apply(mode: UInt): mxMode = litTable(mode)
+}
+
 class MxClassifiedFp(format: MxFormat) extends Bundle {
   val isNaN = Bool()
   val isInf = Bool()
