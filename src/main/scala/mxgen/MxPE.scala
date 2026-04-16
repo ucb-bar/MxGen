@@ -1,4 +1,4 @@
-package mxgen 
+package mxgen
 
 import chisel3._
 import chisel3.util._
@@ -18,9 +18,6 @@ class MxPE(config: MxConfig, lut: Boolean) extends Module {
   val flexMults = Seq.fill(2,2){ Module(new MACU(lut)) }
   val outFM = Wire(Vec(4, UInt(config.multOutWidth.W)))
 
-  // printf(p"enable: ${io.enable}, mask_a: ${Binary(io.mask_a)}, mask_w: ${Binary(io.mask_w)}\n")  // --- IGNORE ---
-  // printf(p"in_a: ${Binary(io.in_a)}, in_w: ${Binary(io.in_w)}\n")  // --- IGNORE ---
-
   for (i <- 0 until 2) {
     for (j <- 0 until 2) {
       val fm = flexMults(i)(j)
@@ -28,48 +25,78 @@ class MxPE(config: MxConfig, lut: Boolean) extends Module {
       val a_en = Wire(Bool())
       val w_en = Wire(Bool())
 
+      // --- Activation input routing (gated by fixedActInputs) ---
       if (config.inPE_act_width == 4) {
-          when (io.modeDecoded.actInputs === 1.U) {
+        config.fixedActInputs match {
+          case Some(1) =>
             a := io.in_a(2*(i+1) - 1, 2*i)
             a_en := io.mask_a(0)
-          } .otherwise {
+          case Some(_) =>
             a := io.in_a(config.actflexMulInWidth*(i+1) - 1, config.actflexMulInWidth*i)
             a_en := io.mask_a(i)
-          }
+          case None =>
+            when (io.modeDecoded.actInputs === 1.U) {
+              a := io.in_a(2*(i+1) - 1, 2*i)
+              a_en := io.mask_a(0)
+            } .otherwise {
+              a := io.in_a(config.actflexMulInWidth*(i+1) - 1, config.actflexMulInWidth*i)
+              a_en := io.mask_a(i)
+            }
+        }
       } else {
         a := io.in_a(config.actflexMulInWidth*(i+1) - 1, config.actflexMulInWidth*i)
         a_en := io.mask_a(i)
       }
 
+      // --- Weight input routing (gated by fixedWeiInputs) ---
       val w = Wire(UInt(config.weiflexMulInWidth.W))
 
       if (config.numWeiInputs < 3) {
         if (config.inPE_wei_width == 4) {
-          when (io.modeDecoded.weiInputs === 1.U) {
-            w := io.in_w(2*(j+1) - 1, 2*j).pad(config.weiflexMulInWidth)
-            w_en := io.mask_w(0)
-          } .otherwise {
-            w := io.in_w(config.weiflexMulInWidth*(j+1) - 1, config.weiflexMulInWidth*j)
-            w_en := io.mask_w(j)
+          config.fixedWeiInputs match {
+            case Some(1) =>
+              w := io.in_w(2*(j+1) - 1, 2*j).pad(config.weiflexMulInWidth)
+              w_en := io.mask_w(0)
+            case Some(_) =>
+              w := io.in_w(config.weiflexMulInWidth*(j+1) - 1, config.weiflexMulInWidth*j)
+              w_en := io.mask_w(j)
+            case None =>
+              when (io.modeDecoded.weiInputs === 1.U) {
+                w := io.in_w(2*(j+1) - 1, 2*j).pad(config.weiflexMulInWidth)
+                w_en := io.mask_w(0)
+              } .otherwise {
+                w := io.in_w(config.weiflexMulInWidth*(j+1) - 1, config.weiflexMulInWidth*j)
+                w_en := io.mask_w(j)
+              }
           }
         } else {
           w := io.in_w(config.weiflexMulInWidth*(j+1) - 1, config.weiflexMulInWidth*j)
           w_en := io.mask_w(j)
         }
       } else {
-        when (io.modeDecoded.weiInputs === 1.U) {
+        config.fixedWeiInputs match {
+          case Some(1) =>
             w := io.in_w(2*(j+1) - 1, 2*j).pad(config.weiflexMulInWidth)
             w_en := io.mask_w(0)
-          } .elsewhen (io.modeDecoded.weiInputs < 3.U) {
+          case Some(n) if n < 3 =>
             w := io.in_w(config.weiflexMulInWidth*(j*2+1) - 1, config.weiflexMulInWidth*j*2)
             w_en := io.mask_w(j)
-          }.otherwise {
+          case Some(_) =>
             w := io.in_w(config.weiflexMulInWidth*(i*2+j + 1) - 1, config.weiflexMulInWidth*((i*2+j)))
             w_en := io.mask_w(j)
-          }
+          case None =>
+            when (io.modeDecoded.weiInputs === 1.U) {
+              w := io.in_w(2*(j+1) - 1, 2*j).pad(config.weiflexMulInWidth)
+              w_en := io.mask_w(0)
+            } .elsewhen (io.modeDecoded.weiInputs < 3.U) {
+              w := io.in_w(config.weiflexMulInWidth*(j*2+1) - 1, config.weiflexMulInWidth*j*2)
+              w_en := io.mask_w(j)
+            }.otherwise {
+              w := io.in_w(config.weiflexMulInWidth*(i*2+j + 1) - 1, config.weiflexMulInWidth*((i*2+j)))
+              w_en := io.mask_w(j)
+            }
+        }
       }
-
-      // printf(p"a: ${Binary(a)} w: ${Binary(w)} \n")
 
       fm.io.w := a(config.actflexMulInWidth - 1, 0)
       fm.io.act := w(config.weiflexMulInWidth - 1, 0)
@@ -97,25 +124,50 @@ class MxPE(config: MxConfig, lut: Boolean) extends Module {
     outFM.asUInt
   }
 
+  // --- Output routing (gated by needsOut1/needsOut2/needsOut4) ---
   if (config.inPE_act_width == 4 || config.inPE_wei_width == 4) {
-    val outShift0 = outFM(3) << io.modeDecoded.shift(0)(0)
-    val outShift1 = outFM(2) << io.modeDecoded.shift(0)(1)
-    val outShift2 = outFM(1) << io.modeDecoded.shift(1)(0)
-    val outShift3 = outFM(0) << io.modeDecoded.shift(1)(1)
+    // Shift-and-add paths are only needed for 1-output or 2-output modes.
+    // When all configured modes have 4 outputs, skip entirely.
+    if (config.needsOut1 || config.needsOut2) {
+      val outShift0 = outFM(3) << io.modeDecoded.shift(0)(0)
+      val outShift1 = outFM(2) << io.modeDecoded.shift(0)(1)
+      val outShift2 = outFM(1) << io.modeDecoded.shift(1)(0)
+      val outShift3 = outFM(0) << io.modeDecoded.shift(1)(1)
 
-    val sum1 = outShift0 + outShift1 + outShift2 + outShift3
-    val sum2 = Mux(io.modeDecoded.actWidth === 4.U, outShift0 + outShift2, outShift0 + outShift1)
-    val sum3 = Mux(io.modeDecoded.actWidth === 4.U, outShift1 + outShift3, outShift2 + outShift3)
+      val out1 = if (config.needsOut1) {
+        Some((outShift0 + outShift1 + outShift2 + outShift3).pad(config.outPE_width))
+      } else None
 
-    val out1 = sum1.pad(config.outPE_width)
-    val out2 = Wire(Vec(2, UInt((config.outPE_width / 2).W)))
-    out2(0) := sum3.pad((config.outPE_width / 2))
-    out2(1) := sum2.pad((config.outPE_width / 2))
+      val out2 = if (config.needsOut2) {
+        val sum2 = Mux(io.modeDecoded.actWidth === 4.U, outShift0 + outShift2, outShift0 + outShift1)
+        val sum3 = Mux(io.modeDecoded.actWidth === 4.U, outShift1 + outShift3, outShift2 + outShift3)
+        val v = Wire(Vec(2, UInt((config.outPE_width / 2).W)))
+        v(0) := sum3.pad(config.outPE_width / 2)
+        v(1) := sum2.pad(config.outPE_width / 2)
+        Some(v.asUInt)
+      } else None
 
-    io.output := Mux(io.modeDecoded.numOutputs === 1.U, out1.asUInt,
-                   Mux(io.modeDecoded.numOutputs === 2.U, out2.asUInt,
-                     out4Packed))
-
+      config.fixedNumOutputs match {
+        case Some(1) => io.output := out1.get
+        case Some(2) => io.output := out2.get
+        case None =>
+          (config.needsOut1, config.needsOut2, config.needsOut4) match {
+            case (true, true, true) =>
+              io.output := Mux(io.modeDecoded.numOutputs === 1.U, out1.get,
+                Mux(io.modeDecoded.numOutputs === 2.U, out2.get, out4Packed))
+            case (true, false, true) =>
+              io.output := Mux(io.modeDecoded.numOutputs === 1.U, out1.get, out4Packed)
+            case (false, true, true) =>
+              io.output := Mux(io.modeDecoded.numOutputs === 2.U, out2.get, out4Packed)
+            case (true, true, false) =>
+              io.output := Mux(io.modeDecoded.numOutputs === 1.U, out1.get, out2.get)
+            case _ => io.output := out4Packed
+          }
+        case _ => io.output := out4Packed
+      }
+    } else {
+      io.output := out4Packed
+    }
   } else {
     io.output := out4Packed
   }

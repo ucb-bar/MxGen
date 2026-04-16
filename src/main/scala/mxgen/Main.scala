@@ -14,10 +14,10 @@ package mxgen
 // You can also override `inActBusWidth`, `inWeiBusWidth`, `expAdderWidths`
 // and `laneOutputWidths` per-instance.
 object Main extends App {
-  val config = MxConfig.mxGemmini  // or fp4Only, fp6, fp8, all (with matching bus widths)
+  val config = MxConfig.mxGemmini
   println(config.describe)
   circt.stage.ChiselStage.emitSystemVerilogFile(
-    new MxPE(config, lut = true),
+    new MxFpMul(config, lut = true),
     Array("--target-dir", "generated")
   )
 }

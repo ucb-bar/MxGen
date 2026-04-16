@@ -207,6 +207,10 @@ case class MxConfig (
   require(weiFormats.nonEmpty, "MxConfig: weiFormats must not be empty")
   require(expAdderWidths.length == 4, "MxConfig.expAdderWidths must have 4 entries (one per lane)")
   laneOutputWidths.foreach(s => require(s.length == 4, "MxConfig.laneOutputWidths must have 4 entries"))
+  require(inActBusWidth >= MxConfig.minBusWidth(actFormats),
+    s"MxConfig: inActBusWidth=$inActBusWidth too narrow for actFormats (need >= ${MxConfig.minBusWidth(actFormats)})")
+  require(inWeiBusWidth >= MxConfig.minBusWidth(weiFormats),
+    s"MxConfig: inWeiBusWidth=$inWeiBusWidth too narrow for weiFormats (need >= ${MxConfig.minBusWidth(weiFormats)})")
 
   // PE mode slots: either explicitly overridden or derived from the cartesian
   // product of actFormats x weiFormats. Use `modesOverride` when you need
@@ -238,6 +242,33 @@ case class MxConfig (
     )) 5
     else 4
 
+  // ---------------------------------------------------------------------------
+  // Elaboration-time gating flags — derived from modesSupported.
+  // These allow MxPE and MxFpMul to skip generating hardware that is
+  // unreachable for the configured set of formats/modes.
+  // ---------------------------------------------------------------------------
+  val numOutputsValues: Set[Int] = modesSupported.map(_.numOutputs).toSet
+  val fixedNumOutputs: Option[Int] = if (numOutputsValues.size == 1) Some(numOutputsValues.head) else None
+  val needsOut1: Boolean = numOutputsValues.contains(1)
+  val needsOut2: Boolean = numOutputsValues.contains(2)
+  val needsOut4: Boolean = numOutputsValues.contains(4)
+  val numActiveOutputLanes: Int = numOutputsValues.max
+
+  val fixedActInputs: Option[Int] = {
+    val s = modesSupported.map(_.actInputs).toSet
+    if (s.size == 1) Some(s.head) else None
+  }
+  val fixedWeiInputs: Option[Int] = {
+    val s = modesSupported.map(_.weiInputs).toSet
+    if (s.size == 1) Some(s.head) else None
+  }
+
+  val needsRuntimeActType: Boolean = actFormats.size > 1
+  val needsRuntimeWeiType: Boolean = weiFormats.size > 1
+  val needsRuntimeMode: Boolean = modesSupported.size > 1
+
+  val sigWidthPairs: Set[(Int, Int)] = modesSupported.map(m => (m.actWidth, m.weiWidth)).toSet
+
   // Per-format support flags for conditional hardware generation in MxFpMul.
   def actSupportFp4   = actFormats.contains(MxFormat.FP4)
   def actSupportFp6_0 = actFormats.contains(MxFormat.FP6_E2M3)
@@ -264,20 +295,40 @@ case class MxConfig (
       val idx = MxPEParams.allModes.indexOf(m)
       f"  ${a.label}%-10s x ${w.label}%-10s -> mode$idx"
     }
+    val gatingStr = Seq(
+      s"fixedNumOutputs=${fixedNumOutputs.getOrElse("runtime")}",
+      s"activeOutputLanes=$numActiveOutputLanes",
+      s"runtimeMode=$needsRuntimeMode",
+      s"runtimeActType=$needsRuntimeActType",
+      s"runtimeWeiType=$needsRuntimeWeiType",
+      s"out1=${needsOut1}, out2=${needsOut2}, out4=${needsOut4}"
+    ).mkString(", ")
     s"""MxConfig: ${modesSupported.length} mode(s), out bus = $outPE_width bits, lane widths = ${laneWidths.mkString("[", ", ", "]")}
        |  actFormats = $actsStr
        |  weiFormats = $weisStr
        |  modes used = $modeStr
+       |  gating: $gatingStr
        |  supported operations:
        |${rows.mkString("\n")}""".stripMargin
   }
 }
 
 object MxConfig {
-  def all = MxConfig(MxFormat.all, MxFormat.all)
+  /** Minimum bus width needed for a set of formats.
+    * Dual-lane formats (sigWidth < 4) need 2 × bitWidth;
+    * single-lane formats (sigWidth >= 4) need 1 × bitWidth.  */
+  def minBusWidth(formats: Set[MxFormat]): Int = formats.map { f =>
+    if (f.sigWidth >= 4) f.bitWidth else f.bitWidth * 2
+  }.max
+
+  def all = MxConfig(MxFormat.all, MxFormat.all,
+    inActBusWidth = minBusWidth(MxFormat.all),
+    inWeiBusWidth = minBusWidth(MxFormat.all))
   def fp4Only = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP4))
   def fp6 = MxConfig(MxFormat.fp6, MxFormat.fp6)
-  def fp8 = MxConfig(MxFormat.fp8, MxFormat.fp8)
+  def fp8 = MxConfig(MxFormat.fp8, MxFormat.fp8,
+    inActBusWidth = minBusWidth(MxFormat.fp8),
+    inWeiBusWidth = minBusWidth(MxFormat.fp8))
   def mxGemmini = MxConfig(
     actFormats = Set(MxFormat.FP4, MxFormat.FP6_E3M2, MxFormat.FP8_E4M3),
     weiFormats = Set(MxFormat.FP4, MxFormat.FP6_E3M2, MxFormat.FP8_E4M3),
