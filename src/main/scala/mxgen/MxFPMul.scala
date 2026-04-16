@@ -4,25 +4,22 @@ import chisel3._
 import chisel3.util._
 import mxgen.hardfloat._
 
-class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: MxFloat) extends Module with HasMxPEParameters {
-  println("Creating MxFpMul with product precision: " + fpProductPrecision + " and acc precision: " + fpAccPrecision)
-  // TODO: I am definining these parameters here, but this shouldn't be like this, I will change this module to extend parameter class
-  val outType1 = MxFormats(fpProductPrecision._1, fpProductPrecision._2)
-  val outType2 = MxFormats(fpProductPrecision._1, fpProductPrecision._2)
-  val outType4 = MxFormats(fpProductPrecision._1, fpProductPrecision._2)
-  val cType = MxFormats(fpAccPrecision.expWidth, fpAccPrecision.sigWidth)
+class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
+  println("Creating MxFpMul with product precision: " + config.productFormat + " and acc precision: " + config.accFormat)
+  println(config.describe)
+
+  val outType1 = config.productFormat
+  val outType2 = config.productFormat
+  val outType4 = config.productFormat
+  val cType = config.accFormat
   val totalAdderWidth = 4*(outType4.exp + 1)
 
-  val ts = TypeSupport(
-    actSupportFp4 = true, actSupportFp6_1 = true, actSupportFp8_0 = true,
-    weiSupportFp4 = true, weiSupportFp6_1 = true, weiSupportFp8_0 = true
-  )
-  
+
   val io = IO(new Bundle {
-    val in_activation = Input(UInt(inAWidth.W))
-    val type_a = Input(new MxTypes())
-    val in_weights = Input(UInt(inBWidth.W))
-    val type_w = Input(new MxTypes())
+    val in_activation = Input(UInt(config.inActBusWidth.W))
+    val type_a = Input(new MxTypeBundle())
+    val in_weights = Input(UInt(config.inWeiBusWidth.W))
+    val type_w = Input(new MxTypeBundle())
     val mode = Input(new mxMode())
     val enable = Input(Bool())
     val rec_c = Input(UInt((4*(cType.exp + cType.sig + 1)).W))
@@ -86,18 +83,18 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
   }
 
   // Separate input into lanes
-  val lanes2_a = io.in_activation.asTypeOf(Vec(2, UInt((inAWidth/2).W)))
-  val lanes1_a = io.in_activation.asTypeOf(Vec(1, UInt((inAWidth).W))) 
-  val lanes2_w = io.in_weights.asTypeOf(Vec(2, UInt((inBWidth/2).W)))
-  val lanes1_w = io.in_weights.asTypeOf(Vec(1, UInt((inBWidth).W)))
+  val lanes2_a = io.in_activation.asTypeOf(Vec(2, UInt((config.inActBusWidth/2).W)))
+  val lanes1_a = io.in_activation.asTypeOf(Vec(1, UInt((config.inActBusWidth).W))) 
+  val lanes2_w = io.in_weights.asTypeOf(Vec(2, UInt((config.inWeiBusWidth/2).W)))
+  val lanes1_w = io.in_weights.asTypeOf(Vec(1, UInt((config.inWeiBusWidth).W)))
 
   // printf(p"Inputs a: ${Binary(lanes2_a.asUInt)}, Inputs w: ${Binary(lanes2_w.asUInt)}\n")
 
   // Wire up elements for PE + Exp Adder
-  val inA_pe   = WireDefault(0.U(peInAWidth.W))
-  val inW_pe   = WireDefault(0.U(peInBWidth.W))
-  val inA_exp  = WireDefault(0.U((inAWidth - peInAWidth).W))
-  val inW_exp  = WireDefault(0.U((inBWidth - peInBWidth).W))
+  val inA_pe   = WireDefault(0.U(config.inPE_act_totalWidth.W))
+  val inW_pe   = WireDefault(0.U(config.inPE_wei_totalWidth.W))
+  val inA_exp  = WireDefault(0.U((config.inActBusWidth - config.inPE_act_totalWidth).W))
+  val inW_exp  = WireDefault(0.U((config.inWeiBusWidth - config.inPE_wei_totalWidth).W))
   val inA_sign = WireDefault(0.U(2.W))
   val inW_sign = WireDefault(0.U(2.W))
   val in_a_mask= WireDefault("b11".U(2.W))
@@ -108,9 +105,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
   // Classify input lanes
   // Get exps, sigs, and signs from the classified inputs in the right format for the PE and Exp Adder
   // Define zero inputs for masking 
-  if (actSupportFp4) {
-    val in_a_w2_cl = lanes2_a.map { f => classify(MxFormats.fp4, f(3, 0)) }
-    val (exps_a_w2, sigs_a_w2, signs_a_w2) = in_a_w2_cl.zipWithIndex.map { case (f, i) => pack(f, expAdderWidths(i*2), peInAWidth / 2, (inAWidth - peInAWidth)/2) }.unzip3
+  if (config.actSupportFp4) {
+    val in_a_w2_cl = lanes2_a.map { f => classify(MxFormat.FP4, f(3, 0)) }
+    val (exps_a_w2, sigs_a_w2, signs_a_w2) = in_a_w2_cl.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i*2), config.inPE_act_totalWidth / 2, (config.inActBusWidth - config.inPE_act_totalWidth)/2) }.unzip3
     val in_a_w2_zero = in_a_w2_cl.map(f => f.isZero)
 
     // printf(p"in_a_w2_zero: ${Binary(in_a_w2_zero.asUInt)}\n")
@@ -122,9 +119,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
       in_a_mask := VecInit.tabulate(2){i => in_a_w2_zero(i)}.asUInt
     }
   }
-  if (actSupportFp6_1) {
-    val in_a_w3_cl_fp6 = lanes2_a.map { f => classify(MxFormats.fp6_1, f(5, 0)) }
-    val (exps_a_w3_fp6_1, sigs_a_w3_fp6_1, signs_a_w3_fp6_1) = in_a_w3_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, expAdderWidths(i*2), peInAWidth / 2, (inAWidth - peInAWidth)/2) }.unzip3
+  if (config.actSupportFp6_1) {
+    val in_a_w3_cl_fp6 = lanes2_a.map { f => classify(MxFormat.FP6_E3M2, f(5, 0)) }
+    val (exps_a_w3_fp6_1, sigs_a_w3_fp6_1, signs_a_w3_fp6_1) = in_a_w3_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i*2), config.inPE_act_totalWidth / 2, (config.inActBusWidth - config.inPE_act_totalWidth)/2) }.unzip3
     val in_a_w3_zero_fp6 = in_a_w3_cl_fp6.map(f => f.isZero)
 
     when (io.type_a.exp === 3.U && io.type_a.sig === 3.U) {
@@ -134,9 +131,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
       in_a_mask := VecInit.tabulate(2){i => in_a_w3_zero_fp6(i)}.asUInt
     }
   }
-  if (actSupportFp8_1) {
-    val in_a_w3_cl_fp8 = lanes2_a.map { f => classify(MxFormats.fp8_1, f(7, 0)) }
-    val (exps_a_w3_fp8_1, sigs_a_w3_fp8_1, signs_a_w3_fp8_1) = in_a_w3_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, expAdderWidths(i*2), peInAWidth / 2, (inAWidth - peInAWidth)/2) }.unzip3
+  if (config.actSupportFp8_1) {
+    val in_a_w3_cl_fp8 = lanes2_a.map { f => classify(MxFormat.FP8_E5M2, f(7, 0)) }
+    val (exps_a_w3_fp8_1, sigs_a_w3_fp8_1, signs_a_w3_fp8_1) = in_a_w3_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i*2), config.inPE_act_totalWidth / 2, (config.inActBusWidth - config.inPE_act_totalWidth)/2) }.unzip3
     val in_a_w3_zero_fp8 = in_a_w3_cl_fp8.map(f => f.isZero)
 
     when (io.type_a.exp === 5.U && io.type_a.sig === 3.U) {
@@ -147,9 +144,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
       nanA := in_a_w3_cl_fp8(0).isNaN || in_a_w3_cl_fp8(1).isNaN
     }
   }
-  if (actSupportFp6_0) {
-    val in_a_w4_cl_fp6 = lanes1_a.map { f => classify(MxFormats.fp6_0, f(5, 0)) }
-    val (exps_a_w4_fp6_0, sigs_a_w4_fp6_0, signs_a_w4_fp6_0) = in_a_w4_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, expAdderWidths(i*2), peInAWidth, inAWidth - peInAWidth) }.unzip3
+  if (config.actSupportFp6_0) {
+    val in_a_w4_cl_fp6 = lanes1_a.map { f => classify(MxFormat.FP6_E2M3, f(5, 0)) }
+    val (exps_a_w4_fp6_0, sigs_a_w4_fp6_0, signs_a_w4_fp6_0) = in_a_w4_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i*2), config.inPE_act_totalWidth, config.inActBusWidth - config.inPE_act_totalWidth) }.unzip3
     val in_a_w4_zero_fp6 = in_a_w4_cl_fp6.map(f => f.isZero)
 
     when (io.type_a.exp === 2.U && io.type_a.sig === 4.U) {
@@ -159,9 +156,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
       in_a_mask := VecInit.tabulate(2){i => in_a_w4_zero_fp6(0)}.asUInt
     }
   }
-  if (actSupportFp8_0) {
-    val in_a_w4_cl_fp8 = lanes1_a.map { f => classify(MxFormats.fp8_0, f(7, 0)) }
-    val (exps_a_w4_fp8_0, sigs_a_w4_fp8_0, signs_a_w4_fp8_0) = in_a_w4_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, expAdderWidths(i*2), peInAWidth, inAWidth - peInAWidth) }.unzip3
+  if (config.actSupportFp8_0) {
+    val in_a_w4_cl_fp8 = lanes1_a.map { f => classify(MxFormat.FP8_E4M3, f(7, 0)) }
+    val (exps_a_w4_fp8_0, sigs_a_w4_fp8_0, signs_a_w4_fp8_0) = in_a_w4_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i*2), config.inPE_act_totalWidth, config.inActBusWidth - config.inPE_act_totalWidth) }.unzip3
     val in_a_w4_zero_fp8 = in_a_w4_cl_fp8.map(f => f.isZero)
 
     when (io.type_a.exp === 4.U && io.type_a.sig === 4.U) {
@@ -173,9 +170,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
     }
   }
 
-  if (weiSupportFp4) {
-    val in_w_w2_cl = lanes2_w.map { f => classify(MxFormats.fp4, f(3, 0)) }
-    val (exps_w_w2, sigs_w_w2, signs_w_w2) = in_w_w2_cl.zipWithIndex.map { case (f, i) => pack(f, expAdderWidths(i), peInBWidth / 2, (inBWidth - peInBWidth)/2) }.unzip3
+  if (config.weiSupportFp4) {
+    val in_w_w2_cl = lanes2_w.map { f => classify(MxFormat.FP4, f(3, 0)) }
+    val (exps_w_w2, sigs_w_w2, signs_w_w2) = in_w_w2_cl.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i), config.inPE_wei_totalWidth / 2, (config.inWeiBusWidth - config.inPE_wei_totalWidth)/2) }.unzip3
     val in_w_w2_zero = in_w_w2_cl.map(f => f.isZero)
 
     // printf(p"in_w_w2_zero: ${Binary(in_w_w2_zero.asUInt)}\n")
@@ -188,9 +185,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
       in_w_mask := VecInit.tabulate(2){i => in_w_w2_zero(i)}.asUInt
     }
   }
-  if (weiSupportFp6_1) {
-    val in_w_w3_cl_fp6 = lanes2_w.map { f => classify(MxFormats.fp6_1, f(5, 0)) }
-    val (exps_w_w3_fp6_1, sigs_w_w3_fp6_1, signs_w_w3_fp6_1) = in_w_w3_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, expAdderWidths(i), peInBWidth / 2, (inBWidth - peInBWidth)/2) }.unzip3
+  if (config.weiSupportFp6_1) {
+    val in_w_w3_cl_fp6 = lanes2_w.map { f => classify(MxFormat.FP6_E3M2, f(5, 0)) }
+    val (exps_w_w3_fp6_1, sigs_w_w3_fp6_1, signs_w_w3_fp6_1) = in_w_w3_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i), config.inPE_wei_totalWidth / 2, (config.inWeiBusWidth - config.inPE_wei_totalWidth)/2) }.unzip3
     val in_w_w3_zero_fp6 = in_w_w3_cl_fp6.map(f => f.isZero)
 
     when (io.type_w.exp === 3.U && io.type_w.sig === 3.U) {
@@ -200,9 +197,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
       in_w_mask := VecInit.tabulate(2){i => in_w_w3_zero_fp6(i)}.asUInt
     }
   }
-  if (weiSupportFp8_1) {
-    val in_w_w3_cl_fp8 = lanes2_w.map { f => classify(MxFormats.fp8_1, f(7, 0)) }
-    val (exps_w_w3_fp8_1, sigs_w_w3_fp8_1, signs_w_w3_fp8_1) = in_w_w3_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, expAdderWidths(i), peInBWidth / 2, (inBWidth - peInBWidth)/2) }.unzip3
+  if (config.weiSupportFp8_1) {
+    val in_w_w3_cl_fp8 = lanes2_w.map { f => classify(MxFormat.FP8_E5M2, f(7, 0)) }
+    val (exps_w_w3_fp8_1, sigs_w_w3_fp8_1, signs_w_w3_fp8_1) = in_w_w3_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i), config.inPE_wei_totalWidth / 2, (config.inWeiBusWidth - config.inPE_wei_totalWidth)/2) }.unzip3
     val in_w_w3_zero_fp8 = in_w_w3_cl_fp8.map(f => f.isZero)
 
     when (io.type_w.exp === 5.U && io.type_w.sig === 3.U) {
@@ -213,9 +210,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
       nanW := in_w_w3_cl_fp8(0).isNaN || in_w_w3_cl_fp8(1).isNaN
     }
   }
-  if (weiSupportFp6_0) {
-    val in_w_w4_cl_fp6 = lanes1_w.map { f => classify(MxFormats.fp6_0, f(5, 0)) }
-    val (exps_w_w4_fp6_0, sigs_w_w4_fp6_0, signs_w_w4_fp6_0) = in_w_w4_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, expAdderWidths(i), peInBWidth, inBWidth - peInBWidth) }.unzip3
+  if (config.weiSupportFp6_0) {
+    val in_w_w4_cl_fp6 = lanes1_w.map { f => classify(MxFormat.FP6_E2M3, f(5, 0)) }
+    val (exps_w_w4_fp6_0, sigs_w_w4_fp6_0, signs_w_w4_fp6_0) = in_w_w4_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i), config.inPE_wei_totalWidth, config.inWeiBusWidth - config.inPE_wei_totalWidth) }.unzip3
     val in_w_w4_zero_fp6 = in_w_w4_cl_fp6.map(f => f.isZero)
 
     when (io.type_w.exp === 2.U && io.type_w.sig === 4.U) {
@@ -225,9 +222,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
       in_w_mask := VecInit.tabulate(2){i => in_w_w4_zero_fp6(0)}.asUInt
     }
   }
-  if (weiSupportFp8_0) {
-    val in_w_w4_cl_fp8 = lanes1_w.map { f => classify(MxFormats.fp8_0, f(7, 0)) }
-    val (exps_w_w4_fp8_0, sigs_w_w4_fp8_0, signs_w_w4_fp8_0) = in_w_w4_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, expAdderWidths(i), peInBWidth, inBWidth - peInBWidth) }.unzip3
+  if (config.weiSupportFp8_0) {
+    val in_w_w4_cl_fp8 = lanes1_w.map { f => classify(MxFormat.FP8_E4M3, f(7, 0)) }
+    val (exps_w_w4_fp8_0, sigs_w_w4_fp8_0, signs_w_w4_fp8_0) = in_w_w4_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i), config.inPE_wei_totalWidth, config.inWeiBusWidth - config.inPE_wei_totalWidth) }.unzip3
     val in_w_w4_zero_fp8 = in_w_w4_cl_fp8.map(f => f.isZero)
 
     when (io.type_w.exp === 4.U && io.type_w.sig === 4.U) {
@@ -246,8 +243,8 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
                       inA_sign(0) ^ inW_sign(1),    
                       inA_sign(0) ^ inW_sign(0))    
   // PE Instantiation
-  val out_pe = Wire(UInt(peOutWidth.W))
-  val PE = Module(new MxPE(mxparameters, lut))
+  val out_pe = Wire(UInt(config.outPE_width.W))
+  val PE = Module(new MxPE(config, lut))
   PE.io.modeDecoded := io.mode
   PE.io.enable := io.enable
   PE.io.mask_a := ~in_a_mask.asUInt
@@ -262,7 +259,7 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
 
   // Exp Adder Instantiation
   val out_e = Wire(UInt(totalAdderWidth.W))
-  val expAdder = Module(new MxExp(inA_exp_width = inAWidth - peInAWidth, inW_exp_width = inBWidth - peInBWidth, outWidth = totalAdderWidth, elemW = expAdderWidths, outTypes = Seq(outType1, outType4, outType1, outType4)))
+  val expAdder = Module(new MxExp(inA_exp_width = config.inActBusWidth - config.inPE_act_totalWidth, inW_exp_width = config.inWeiBusWidth - config.inPE_wei_totalWidth, outWidth = totalAdderWidth, elemW = config.expAdderWidths, outTypes = Seq(outType1, outType4, outType1, outType4)))
   expAdder.io.enable := io.enable
   expAdder.io.modeDecoded := io.mode
   expAdder.io.mask_a := ~in_a_mask.asUInt
@@ -275,9 +272,9 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
 
 
   val out4_toRec = VecInit.tabulate(4) { i =>
-    val out4_toRec_norm_1 = normalize(out_pe((i)*(peOutWidth/4) + 5, i*peOutWidth/4), outType4.sig - 1, 6)
-    val out4_toRec_norm_2 = normalize(out_pe((i)*(peOutWidth/4) + 4, i*peOutWidth/4), outType4.sig - 1, 5)
-    val out4_toRec_norm_3 = normalize(out_pe((i)*(peOutWidth/4) + 3, i*peOutWidth/4), outType4.sig - 1, 4)
+    val out4_toRec_norm_1 = normalize(out_pe((i)*(config.outPE_width/4) + 5, i*config.outPE_width/4), outType4.sig - 1, 6)
+    val out4_toRec_norm_2 = normalize(out_pe((i)*(config.outPE_width/4) + 4, i*config.outPE_width/4), outType4.sig - 1, 5)
+    val out4_toRec_norm_3 = normalize(out_pe((i)*(config.outPE_width/4) + 3, i*config.outPE_width/4), outType4.sig - 1, 4)
 
     val out4_rec_exp = Mux(io.type_a.sig === 2.U && io.type_w.sig === 2.U,  out4_toRec_norm_3._2,
       Mux(io.type_a.sig === 3.U && io.type_w.sig === 3.U,  out4_toRec_norm_1._2, out4_toRec_norm_2._2))
@@ -298,8 +295,8 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
   }
 
   val out2_toRec = VecInit.tabulate(2) { i =>
-    val out2_toRec_norm_1 = normalize(out_pe((i)*(peOutWidth/2) + 6, i*peOutWidth/2), outType2.sig - 1, 7)
-    val out2_toRec_norm_2 = normalize(out_pe((i)*(peOutWidth/2) + 5, i*peOutWidth/2), outType2.sig - 1 , 6)
+    val out2_toRec_norm_1 = normalize(out_pe((i)*(config.outPE_width/2) + 6, i*config.outPE_width/2), outType2.sig - 1, 7)
+    val out2_toRec_norm_2 = normalize(out_pe((i)*(config.outPE_width/2) + 5, i*config.outPE_width/2), outType2.sig - 1 , 6)
 
     val out2_toRec_exp = Mux(io.type_a.sig === 2.U || io.type_w.sig === 2.U, out2_toRec_norm_2._2, out2_toRec_norm_1._2)
     val shift_dir = Mux(io.type_a.sig === 2.U || io.type_w.sig === 2.U, out2_toRec_norm_2._3, out2_toRec_norm_1._3)
@@ -335,7 +332,7 @@ class MxFpMul (lut: Boolean) (fpProductPrecision: (Int, Int), fpAccPrecision: Mx
   val laneMask  = VecInit((0 until 4).map(i => io.enable && (i.U < io.mode.numOutputs)))
   val outputs = Wire(Vec(4, UInt(((cType.exp + cType.sig + 1)).W)))
 
-  def resize(in: RawFloat, inT: MxFormats, outT: MxFormats): RawFloat = {
+  def resize(in: RawFloat, inT: MxFormat, outT: MxFormat): RawFloat = {
     val resize_unit = Module(new RoundAnyRawFNToRecFN(inT.exp, inT.sig, outT.exp, outT.sig, 0))
     resize_unit.io.in := in
     resize_unit.io.roundingMode := hardfloat.consts.round_near_even

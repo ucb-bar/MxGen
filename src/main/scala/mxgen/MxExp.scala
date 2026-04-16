@@ -4,7 +4,7 @@ import chisel3._
 import chisel3.util._
 
 
-class MxExp(inA_exp_width: Int, inW_exp_width: Int, outWidth: Int, elemW: Seq[Int], outTypes: Seq[MxFormats]) extends Module {
+class MxExp(inA_exp_width: Int, inW_exp_width: Int, outWidth: Int, elemW: Seq[Int], outTypes: Seq[MxFormat]) extends Module {
   val io = IO(new Bundle {
     val in_a = Input(UInt(inA_exp_width.W))
     val in_w = Input(UInt(inW_exp_width.W))
@@ -43,7 +43,7 @@ class MxExp(inA_exp_width: Int, inW_exp_width: Int, outWidth: Int, elemW: Seq[In
 
 }
 
-class AddBit(elemW: Int, outType: MxFormats) extends Module {
+class AddBit(elemW: Int, outType: MxFormat) extends Module {
   val io = IO(new Bundle {
     val a = Input(SInt(elemW.W))
     val b = Input(SInt(elemW.W))

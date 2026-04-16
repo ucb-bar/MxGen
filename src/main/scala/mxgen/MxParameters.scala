@@ -1,95 +1,43 @@
-package mxgen 
+package mxgen
 
 import chisel3._
 import chisel3.util._
 import chisel3.experimental.BundleLiterals._
 
 // -----------------------------------------------------------------------------
-// TYPE SUPPORT CONFIGURATION
+// NAMED MX FORMATS (user-facing enum of supported floating-point formats)
 // -----------------------------------------------------------------------------
 
-trait HasMxPEParameters {
-  val ts: TypeSupport
-
-  lazy val inAWidth = ts.inAWidth
-  lazy val inBWidth = ts.inBWidth
-
-  lazy val peInAWidth = ts.peInAWidth
-  lazy val peInBWidth = ts.peInBWidth
-  lazy val peOutWidth = ts.peOutWidth
-  lazy val expAdderWidths = ts.expAdderWidths
-
-  lazy val mxparameters = ts.mxparameters
-
-  lazy val actSupportFp4 = ts.actSupportFp4
-  lazy val actSupportFp6_0 = ts.actSupportFp6_0
-  lazy val actSupportFp6_1 = ts.actSupportFp6_1
-  lazy val actSupportFp8_0 = ts.actSupportFp8_0
-  lazy val actSupportFp8_1 = ts.actSupportFp8_1
-  lazy val weiSupportFp4 = ts.weiSupportFp4
-  lazy val weiSupportFp6_0 = ts.weiSupportFp6_0
-  lazy val weiSupportFp6_1 = ts.weiSupportFp6_1
-  lazy val weiSupportFp8_0 = ts.weiSupportFp8_0
-  lazy val weiSupportFp8_1 = ts.weiSupportFp8_1
+sealed trait MxFormat {
+  def expWidth: Int
+  def sigWidth: Int
+  def exp: Int = expWidth
+  def sig: Int = sigWidth
+  def ieee: Int = exp + sig
+  def recoded: Int = exp + sig + 1
+  def bias: Int = (1 << (expWidth - 1)) - 1
+  def bitWidth: Int = expWidth + sigWidth
+  def label: String
+  override def toString: String = label
 }
+object MxFormat {
+  case object FP4      extends MxFormat { val expWidth = 2; val sigWidth = 2; val label = "FP4"      }
+  case object FP6_E2M3 extends MxFormat { val expWidth = 2; val sigWidth = 4; val label = "FP6_E2M3" }
+  case object FP6_E3M2 extends MxFormat { val expWidth = 3; val sigWidth = 3; val label = "FP6_E3M2" }
+  case object FP8_E4M3 extends MxFormat { val expWidth = 4; val sigWidth = 4; val label = "FP8_E4M3" }
+  case object FP8_E5M2 extends MxFormat { val expWidth = 5; val sigWidth = 3; val label = "FP8_E5M2" }
 
-case class TypeSupport (
-  actSupportFp4: Boolean = true,
-  actSupportFp6_0: Boolean = false,
-  actSupportFp6_1: Boolean = false,
-  actSupportFp8_0: Boolean = false,
-  actSupportFp8_1: Boolean = false,
-  weiSupportFp4: Boolean = true,
-  weiSupportFp6_0: Boolean = false,
-  weiSupportFp6_1: Boolean = false,
-  weiSupportFp8_0: Boolean = false,
-  weiSupportFp8_1: Boolean = false
-) {
-  // input parameters
-  val inAWidth = 12
-  val inBWidth = 12
+  case class Custom(expWidth: Int, sigWidth: Int) extends MxFormat {
+    val label: String = s"Custom(E${expWidth}M${sigWidth - 1})"
+  }
 
-  // exp adder width
-  val expAdderWidths = Seq(4, 3, 3, 3)
+  def apply(expWidth: Int, sigWidth: Int): MxFormat =
+    all.find(f => f.expWidth == expWidth && f.sigWidth == sigWidth).getOrElse(Custom(expWidth, sigWidth))
 
-  val modes = (
-    (if (actSupportFp4 && weiSupportFp4) List(PE_MxMode.mode0) else List()) ++
-    (if (actSupportFp4 && weiSupportFp6_1) List(PE_MxMode.mode1) else List()) ++
-    (if (actSupportFp4 && weiSupportFp6_0) List(PE_MxMode.mode2) else List()) ++
-    (if (actSupportFp4 && weiSupportFp8_1) List(PE_MxMode.mode1) else List()) ++
-    (if (actSupportFp4 && weiSupportFp8_0) List(PE_MxMode.mode2) else List()) ++
-
-    (if (actSupportFp6_1 && weiSupportFp4) List(PE_MxMode.mode3) else List()) ++
-    (if (actSupportFp6_1 && weiSupportFp6_1) List(PE_MxMode.mode4) else List()) ++
-    (if (actSupportFp6_1 && weiSupportFp6_0) List(PE_MxMode.mode5) else List()) ++
-    (if (actSupportFp6_1 && weiSupportFp8_1) List(PE_MxMode.mode4) else List()) ++
-    (if (actSupportFp6_1 && weiSupportFp8_0) List(PE_MxMode.mode5) else List()) ++
-
-    (if (actSupportFp6_0 && weiSupportFp4) List(PE_MxMode.mode6) else List()) ++
-    (if (actSupportFp6_0 && weiSupportFp6_1) List(PE_MxMode.mode7) else List()) ++
-    (if (actSupportFp6_0 && weiSupportFp6_0) List(PE_MxMode.mode8) else List()) ++
-    (if (actSupportFp6_0 && weiSupportFp8_1) List(PE_MxMode.mode7) else List()) ++
-    (if (actSupportFp6_0 && weiSupportFp8_0) List(PE_MxMode.mode8) else List()) ++
-
-    (if (actSupportFp8_1 && weiSupportFp4) List(PE_MxMode.mode3) else List()) ++
-    (if (actSupportFp8_1 && weiSupportFp6_1) List(PE_MxMode.mode4) else List()) ++
-    (if (actSupportFp8_1 && weiSupportFp6_0) List(PE_MxMode.mode5) else List()) ++
-    (if (actSupportFp8_1 && weiSupportFp8_1) List(PE_MxMode.mode4) else List()) ++
-    (if (actSupportFp8_1 && weiSupportFp8_0) List(PE_MxMode.mode5) else List()) ++
-
-    (if (actSupportFp8_0 && weiSupportFp4) List(PE_MxMode.mode6) else List()) ++
-    (if (actSupportFp8_0 && weiSupportFp6_1) List(PE_MxMode.mode7) else List()) ++
-    (if (actSupportFp8_0 && weiSupportFp6_0) List(PE_MxMode.mode8) else List()) ++
-    (if (actSupportFp8_0 && weiSupportFp8_1) List(PE_MxMode.mode7) else List()) ++
-    (if (actSupportFp8_0 && weiSupportFp8_0) List(PE_MxMode.mode8) else List())
-  ).distinct
-
-  val mxGemminiModes = PE_MxMode.mxGemminiConfig
-
-  val mxparameters = MxParams(mxGemminiModes)
-  val peInAWidth = mxparameters.inPE_act_totalWidth
-  val peInBWidth = mxparameters.inPE_wei_totalWidth
-  val peOutWidth = mxparameters.outPE_width 
+  val all:     Set[MxFormat] = Set(FP4, FP6_E2M3, FP6_E3M2, FP8_E4M3, FP8_E5M2)
+  val fp4Only: Set[MxFormat] = Set(FP4)
+  val fp6:     Set[MxFormat] = Set(FP6_E2M3, FP6_E3M2)
+  val fp8:     Set[MxFormat] = Set(FP8_E4M3, FP8_E5M2)
 }
 
 // -----------------------------------------------------------------------------
@@ -105,41 +53,9 @@ class mxMode extends Bundle {
   val numOutputs = UInt(3.W)
 }
 
-class MxTypes extends Bundle {
+class MxTypeBundle extends Bundle {
   val exp = UInt(3.W)
   val sig = UInt(3.W)
-}
-
-case class MxFormats (
-  val exponent: Int = 4,
-  val significand: Int = 4
-) {
-  val exp = exponent
-  val sig = significand
-  val ieee = exp + sig
-  val recoded = exp + sig + 1
-  val bias: Int = (1 << (exponent - 1)) - 1
-}
-
-object MxFormats {
-  def fp4 = MxFormats(2, 2)
-  def fp6_0 = MxFormats(2, 4)
-  def fp6_1 = MxFormats(3, 3)
-  def fp8_0 = MxFormats(4, 4)
-  def fp8_1 = MxFormats(5, 3)
-}
-
-object MxTypes {
-  def apply(code: UInt, altfmt: Bool): MxTypes = {
-    val tbl = VecInit(Seq(
-      (new MxTypes).Lit(_.exp -> 2.U, _.sig -> 2.U), // 0 fp4
-      (new MxTypes).Lit(_.exp -> 2.U, _.sig -> 4.U), // 1 fp6_0
-      (new MxTypes).Lit(_.exp -> 4.U, _.sig -> 4.U), // 3 fp8_0
-      (new MxTypes).Lit(_.exp -> 3.U, _.sig -> 3.U), // 2 fp6_1
-      (new MxTypes).Lit(_.exp -> 5.U, _.sig -> 3.U)  // 4 fp8_1
-  ))
-    Mux(altfmt, WireInit(tbl(code +& 2.U)), WireInit(tbl(code)))
-  }
 }
 
 // -----------------------------------------------------------------------------
@@ -147,7 +63,7 @@ object MxTypes {
 // -----------------------------------------------------------------------------
 
 object mxModeDecode {
-  private def litTable = VecInit(PE_MxMode.allModes.map { m =>
+  private def litTable = VecInit(MxPEParams.allModes.map { m =>
     (new mxMode).Lit(
       _.actWidth      -> m.actWidth.U,
       _.weiWidth      -> m.weiWidth.U,
@@ -161,7 +77,7 @@ object mxModeDecode {
   def apply(mode: UInt): mxMode = litTable(mode)
 }
 
-case class PE_MxMode(
+case class MxPEParams(
   actWidth: Int = 2,
   weiWidth: Int = 2,
   actTotalWidth: Int = 4,
@@ -173,14 +89,14 @@ case class PE_MxMode(
   numOutputs: Int = 4
 )
 
-object PE_MxMode {
-  def mode0 = PE_MxMode()
-  def mode1 = PE_MxMode().copy(
+object MxPEParams {
+  def mode0 = MxPEParams()
+  def mode1 = MxPEParams().copy(
     weiWidth = 3, 
     weiTotalWidth = 12,
     outTotalWidth = 20 
   )
-  def mode2 = PE_MxMode().copy(
+  def mode2 = MxPEParams().copy(
     actTotalWidth = 4,
     weiTotalWidth = 4,
     weiWidth = 4,
@@ -189,19 +105,19 @@ object PE_MxMode {
     outTotalWidth = 14,
     numOutputs = 2
   )
-  def mode3 = PE_MxMode().copy(
+  def mode3 = MxPEParams().copy(
     actWidth = 3, 
     actTotalWidth = 6,
     outTotalWidth = 20 
   )
-  def mode4 = PE_MxMode().copy(
+  def mode4 = MxPEParams().copy(
     actTotalWidth = 6,
     weiTotalWidth = 6,
     actWidth = 3,
     weiWidth = 3,
     outTotalWidth = 24 
   )
-  def mode5 = PE_MxMode().copy(
+  def mode5 = MxPEParams().copy(
     actTotalWidth = 6,
     weiTotalWidth = 4,
     actWidth = 3,
@@ -211,7 +127,7 @@ object PE_MxMode {
     outTotalWidth = 14,
     numOutputs = 2
   )
-  def mode6 = PE_MxMode().copy(
+  def mode6 = MxPEParams().copy(
     actTotalWidth = 4,
     weiTotalWidth = 4,
     weiInputs = 2,
@@ -221,7 +137,7 @@ object PE_MxMode {
     outTotalWidth = 14,
     numOutputs = 2
   )
-  def mode7 = PE_MxMode().copy(
+  def mode7 = MxPEParams().copy(
     actTotalWidth = 4,
     weiTotalWidth = 6,
     actWidth = 4,
@@ -232,7 +148,7 @@ object PE_MxMode {
     outTotalWidth = 14,
     numOutputs = 2
   )
-  def mode8 = PE_MxMode().copy(
+  def mode8 = MxPEParams().copy(
     actTotalWidth = 4,
     weiTotalWidth = 4,
     actWidth = 4,
@@ -243,36 +159,150 @@ object PE_MxMode {
     outTotalWidth = 8,
     numOutputs = 1
   )
-  val allModes: List[PE_MxMode] = List(mode0, mode1, mode2, mode3, mode4, mode5, mode6, mode7, mode8)
-  val mxGemminiConfig: List[PE_MxMode] = List(mode0, mode4, mode8)
+  val allModes: List[MxPEParams] = List(mode0, mode1, mode2, mode3, mode4, mode5, mode6, mode7, mode8)
+  val mxGemminiConfig: List[MxPEParams] = List(mode0, mode4, mode8)
+
+  // The mode slot that handles a given (act significand width, wei significand
+  // width) combination. This is the canonical (act, wei) -> mode table.
+  def forSigWidths(actSig: Int, weiSig: Int): MxPEParams = (actSig, weiSig) match {
+    case (2, 2) => mode0
+    case (2, 3) => mode1
+    case (2, 4) => mode2
+    case (3, 2) => mode3
+    case (3, 3) => mode4
+    case (3, 4) => mode5
+    case (4, 2) => mode6
+    case (4, 3) => mode7
+    case (4, 4) => mode8
+    case _ => throw new IllegalArgumentException(s"No PE mode for sig widths ($actSig, $weiSig)")
+  }
+
+  def forFormatCombo(act: MxFormat, wei: MxFormat): MxPEParams =
+    forSigWidths(act.sigWidth, wei.sigWidth)
 }
 
-case class MxParams (
-  modesSupported: List[PE_MxMode] = List(PE_MxMode.mode0),
+// -----------------------------------------------------------------------------
+// TOP-LEVEL CONFIG
+//
+// `MxConfig` is the single user-facing configuration for MxPE and MxFpMul.
+// It specifies which activation and weight formats are supported, and from
+// those derives the PE mode slots and all hardware-level parameters.
+//
+// Bus widths, exp-adder widths, and per-lane PE output widths can all be
+// overridden; any field left at its default is derived from the format sets.
+// -----------------------------------------------------------------------------
+
+case class MxConfig (
+  actFormats:       Set[MxFormat]              = Set(MxFormat.FP4),
+  weiFormats:       Set[MxFormat]              = Set(MxFormat.FP4),
+  productFormat:    MxFormat                   = MxFormat.FP8_E4M3,
+  accFormat:        MxFormat                   = MxFormat.FP8_E4M3,
+  inActBusWidth:    Int                        = 12,
+  inWeiBusWidth:    Int                        = 12,
+  expAdderWidths:   Seq[Int]                   = Seq(4, 3, 3, 3),
+  laneOutputWidths: Option[Seq[Int]]           = None,
+  modesOverride:    Option[List[MxPEParams]]   = None,
 ) {
-  val inPE_act_width: Int = modesSupported.map(_.actWidth).max
-  val actflexMulInWidth: Int = if (modesSupported.exists(m => m.actWidth == 3)) 3 else 2
-  val inPE_wei_width: Int = modesSupported.map(_.weiWidth).max
-  val weiflexMulInWidth: Int = if (modesSupported.exists(m => m.weiWidth == 3)) 3 else 2
+  require(actFormats.nonEmpty, "MxConfig: actFormats must not be empty")
+  require(weiFormats.nonEmpty, "MxConfig: weiFormats must not be empty")
+  require(expAdderWidths.length == 4, "MxConfig.expAdderWidths must have 4 entries (one per lane)")
+  laneOutputWidths.foreach(s => require(s.length == 4, "MxConfig.laneOutputWidths must have 4 entries"))
+
+  // PE mode slots: either explicitly overridden or derived from the cartesian
+  // product of actFormats x weiFormats. Use `modesOverride` when you need
+  // exact control (e.g. only same-format pairs, not all cross-format combos).
+  val modesSupported: List[MxPEParams] = modesOverride.getOrElse((for {
+    a <- actFormats.toSeq
+    w <- weiFormats.toSeq
+  } yield MxPEParams.forFormatCombo(a, w)).distinct.toList)
+
+  // Hardware widths derived from modes
+  val inPE_act_width:      Int = modesSupported.map(_.actWidth).max
+  val inPE_wei_width:      Int = modesSupported.map(_.weiWidth).max
+  val actflexMulInWidth:   Int = if (modesSupported.exists(_.actWidth == 3)) 3 else 2
+  val weiflexMulInWidth:   Int = if (modesSupported.exists(_.weiWidth == 3)) 3 else 2
   val inPE_act_totalWidth: Int = modesSupported.map(_.actTotalWidth).max
   val inPE_wei_totalWidth: Int = modesSupported.map(_.weiTotalWidth).max
-  val numWeiInputs: Int = modesSupported.map(_.weiInputs).max
-  val outPE_width: Int = modesSupported.map(_.outTotalWidth).max
-  val multOutWidth = if (modesSupported.exists(m => m.actWidth == 3 && m.weiWidth == 3)) 6 
-                   else if (modesSupported.exists(m => (m.actWidth, m.weiWidth) == (3,2) || (m.actWidth, m.weiWidth) == (2,3) ||
-                                                        (m.actWidth, m.weiWidth) == (3,4) || (m.actWidth, m.weiWidth) == (4,3))) 5 
-                   else 4
+  val numWeiInputs:        Int = modesSupported.map(_.weiInputs).max
+
+  val outPE_width: Int = laneOutputWidths.map(_.sum).getOrElse(modesSupported.map(_.outTotalWidth).max)
+  val laneWidths: Seq[Int] = laneOutputWidths.getOrElse(Seq.fill(4)(outPE_width / 4))
+  def laneOffset(i: Int): Int = laneWidths.take(i).sum
+  def laneWidth(i: Int):  Int = laneWidths(i)
+
+  val multOutWidth: Int =
+    if (modesSupported.exists(m => m.actWidth == 3 && m.weiWidth == 3)) 6
+    else if (modesSupported.exists(m =>
+      (m.actWidth, m.weiWidth) == (3,2) || (m.actWidth, m.weiWidth) == (2,3) ||
+      (m.actWidth, m.weiWidth) == (3,4) || (m.actWidth, m.weiWidth) == (4,3)
+    )) 5
+    else 4
+
+  // Per-format support flags for conditional hardware generation in MxFpMul.
+  def actSupportFp4   = actFormats.contains(MxFormat.FP4)
+  def actSupportFp6_0 = actFormats.contains(MxFormat.FP6_E2M3)
+  def actSupportFp6_1 = actFormats.contains(MxFormat.FP6_E3M2)
+  def actSupportFp8_0 = actFormats.contains(MxFormat.FP8_E4M3)
+  def actSupportFp8_1 = actFormats.contains(MxFormat.FP8_E5M2)
+  def weiSupportFp4   = weiFormats.contains(MxFormat.FP4)
+  def weiSupportFp6_0 = weiFormats.contains(MxFormat.FP6_E2M3)
+  def weiSupportFp6_1 = weiFormats.contains(MxFormat.FP6_E3M2)
+  def weiSupportFp8_0 = weiFormats.contains(MxFormat.FP8_E4M3)
+  def weiSupportFp8_1 = weiFormats.contains(MxFormat.FP8_E5M2)
+
+  def formatSupportTable: Seq[(MxFormat, MxFormat, MxPEParams)] = {
+    val acts = actFormats.toSeq.sortBy(_.label)
+    val weis = weiFormats.toSeq.sortBy(_.label)
+    for { a <- acts; w <- weis } yield (a, w, MxPEParams.forFormatCombo(a, w))
+  }
+
+  def describe: String = {
+    val actsStr = actFormats.toSeq.map(_.label).sorted.mkString("{", ", ", "}")
+    val weisStr = weiFormats.toSeq.map(_.label).sorted.mkString("{", ", ", "}")
+    val modeStr = modesSupported.map(m => s"mode${MxPEParams.allModes.indexOf(m)}").mkString(", ")
+    val rows = formatSupportTable.map { case (a, w, m) =>
+      val idx = MxPEParams.allModes.indexOf(m)
+      f"  ${a.label}%-10s x ${w.label}%-10s -> mode$idx"
+    }
+    s"""MxConfig: ${modesSupported.length} mode(s), out bus = $outPE_width bits, lane widths = ${laneWidths.mkString("[", ", ", "]")}
+       |  actFormats = $actsStr
+       |  weiFormats = $weisStr
+       |  modes used = $modeStr
+       |  supported operations:
+       |${rows.mkString("\n")}""".stripMargin
+  }
 }
 
-object MxParams {
-  def fp4 = MxParams()
-  def fp6 = MxParams(List(PE_MxMode.mode4, PE_MxMode.mode8, PE_MxMode.mode5, PE_MxMode.mode7))
-  def fp6_0 = MxParams(List(PE_MxMode.mode2, PE_MxMode.mode5, PE_MxMode.mode6, PE_MxMode.mode7, PE_MxMode.mode8))
-  def fp6_1 = MxParams(List(PE_MxMode.mode1, PE_MxMode.mode3, PE_MxMode.mode4, PE_MxMode.mode5, PE_MxMode.mode7))
-  def fp8_0 = MxParams(List(PE_MxMode.mode2, PE_MxMode.mode5, PE_MxMode.mode6, PE_MxMode.mode7, PE_MxMode.mode8))
-  def fp8_1 = MxParams(List(PE_MxMode.mode1, PE_MxMode.mode3, PE_MxMode.mode4, PE_MxMode.mode5, PE_MxMode.mode7))
-  def allfp4 = MxParams(List(PE_MxMode.mode0, PE_MxMode.mode1, PE_MxMode.mode2, PE_MxMode.mode3, PE_MxMode.mode6))
-  def allfp6 = MxParams(List(PE_MxMode.mode1, PE_MxMode.mode3, PE_MxMode.mode4, PE_MxMode.mode5, PE_MxMode.mode7))
-  def allfp8 = MxParams(List(PE_MxMode.mode2, PE_MxMode.mode5, PE_MxMode.mode6, PE_MxMode.mode7, PE_MxMode.mode8))
-  def all = MxParams(List(PE_MxMode.mode0, PE_MxMode.mode1, PE_MxMode.mode2, PE_MxMode.mode3, PE_MxMode.mode4, PE_MxMode.mode5, PE_MxMode.mode6, PE_MxMode.mode7, PE_MxMode.mode8))
+object MxConfig {
+  def all = MxConfig(MxFormat.all, MxFormat.all)
+  def fp4Only = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP4))
+  def fp6 = MxConfig(MxFormat.fp6, MxFormat.fp6)
+  def fp8 = MxConfig(MxFormat.fp8, MxFormat.fp8)
+  def mxGemmini = MxConfig(
+    actFormats = Set(MxFormat.FP4, MxFormat.FP6_E3M2, MxFormat.FP8_E4M3),
+    weiFormats = Set(MxFormat.FP4, MxFormat.FP6_E3M2, MxFormat.FP8_E4M3),
+    modesOverride = Some(List(MxPEParams.mode0, MxPEParams.mode4, MxPEParams.mode8)),
+  )
+}
+
+// -----------------------------------------------------------------------------
+// MX FLOAT BUNDLE
+// -----------------------------------------------------------------------------
+
+case class MxFloat(format: MxFormat, count: Int, isRecoded: Boolean = false, pad: Boolean = true) extends Bundle {
+  val expWidth: Int = format.expWidth
+  val sigWidth: Int = format.sigWidth
+  val bits = if (pad) {
+    UInt((1<<log2Ceil(count * (expWidth + sigWidth + (if (isRecoded) 1 else 0)))).W)
+  } else {
+    UInt((count * (expWidth + sigWidth + (if (isRecoded) 1 else 0))).W)
+  }
+  val bias: Int = format.bias
+}
+
+object MxFloat {
+  def apply(expWidth: Int, sigWidth: Int, count: Int, isRecoded: Boolean, pad: Boolean): MxFloat =
+    MxFloat(MxFormat(expWidth, sigWidth), count, isRecoded, pad)
+  def apply(expWidth: Int, sigWidth: Int, count: Int): MxFloat =
+    MxFloat(MxFormat(expWidth, sigWidth), count)
 }

@@ -3,7 +3,7 @@ package mxgen
 import chisel3._
 import chisel3.util._
 
-class MxClassifiedFp(format: MxFormats) extends Bundle {
+class MxClassifiedFp(format: MxFormat) extends Bundle {
   val isNaN = Bool()
   val isInf = Bool()
   val isZero = Bool()
@@ -14,7 +14,7 @@ class MxClassifiedFp(format: MxFormats) extends Bundle {
 }
 
 object requiredPEMode {
-  def apply(a: MxTypes, w: MxTypes): mxMode = {
+  def apply(a: MxTypeBundle, w: MxTypeBundle): mxMode = {
     val key = Cat(a.sig, w.sig)
     val idx = MuxLookup(key, 0.U) (Seq(
       Cat(2.U(3.W), 2.U(3.W)) -> 0.U,
@@ -33,7 +33,7 @@ object requiredPEMode {
 }
 
 object classify {
-  def apply(dataType: MxFormats, in: Bits): MxClassifiedFp = {
+  def apply(dataType: MxFormat, in: Bits): MxClassifiedFp = {
     val width = dataType.sig + dataType.exp
     val sign = in(width - 1)
     val exp = in(width - 2, dataType.sig - 1)
