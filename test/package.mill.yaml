@@ -1,0 +1,4 @@
+extends: [build.ScalaTests, TestModule.ScalaTest]
+mvnDeps:
+  - edu.berkeley.cs::chiseltest:6.0.0
+  - org.scalatest::scalatest:3.2.17
