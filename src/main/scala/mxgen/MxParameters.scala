@@ -55,9 +55,9 @@ case class MxPEParams(
 object MxPEParams {
   def mode0 = MxPEParams()
   def mode1 = MxPEParams().copy(
-    weiWidth = 3, 
-    weiTotalWidth = 12,
-    outTotalWidth = 20 
+    weiWidth = 3,
+    weiTotalWidth = 6,
+    outTotalWidth = 20
   )
   def mode2 = MxPEParams().copy(
     actTotalWidth = 4,
@@ -287,7 +287,8 @@ object MxConfig {
 
   def all = MxConfig(MxFormat.all, MxFormat.all,
     inActBusWidth = minBusWidth(MxFormat.all),
-    inWeiBusWidth = minBusWidth(MxFormat.all))
+    inWeiBusWidth = minBusWidth(MxFormat.all),
+    expAdderWidths = Seq(5, 5, 5, 5))
   def fp4Only = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP4))
   def fp6 = MxConfig(MxFormat.fp6, MxFormat.fp6)
   def fp8 = MxConfig(MxFormat.fp8, MxFormat.fp8,

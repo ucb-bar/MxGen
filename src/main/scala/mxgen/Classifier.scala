@@ -2,6 +2,7 @@ package mxgen
 
 import chisel3._
 import chisel3.util._
+import chisel3.experimental.BundleLiterals._
 
 // -----------------------------------------------------------------------------
 // BUNDLES AND DECODING
@@ -26,7 +27,7 @@ class MxTypeBundle extends Bundle {
 // -----------------------------------------------------------------------------
 
 object mxModeDecode {
-  private def litTable = VecInit(MxPEParams.allModes.map { m =>
+  def litTable = VecInit(MxPEParams.allModes.map { m =>
     (new mxMode).Lit(
       _.actWidth      -> m.actWidth.U,
       _.weiWidth      -> m.weiWidth.U,

@@ -21,7 +21,7 @@ class MxExp(inA_exp_width: Int, inW_exp_width: Int, outWidth: Int, elemW: Seq[In
   val in2_w = io.in_w.asTypeOf(Vec(2, UInt((inW_exp_width/2).W)))
   val in1_w = io.in_w.asTypeOf(Vec(1, UInt((inW_exp_width).W)))
 
-  val laneMask  = VecInit((0 until 4).map(i => io.enable && (Mux(io.modeDecoded.numOutputs === 1.U, i.U < io.modeDecoded.numOutputs, Mux(io.modeDecoded.numOutputs === 2.U, i.U === 0.U || i.U === 2.U, true.B)))))
+  val laneMask  = VecInit((0 until 4).map(i => io.enable && (Mux(io.modeDecoded.numOutputs === 1.U, i.U < io.modeDecoded.numOutputs, Mux(io.modeDecoded.numOutputs === 2.U, Mux(io.modeDecoded.actInputs === 1.U, i.U === 0.U || i.U === 1.U, i.U === 0.U || i.U === 2.U), true.B)))))
 
   val sums = elemW.zipWithIndex.map{ case (w, i) =>
     val adder = Module(new AddBit(w, outTypes(i)))
@@ -39,7 +39,12 @@ class MxExp(inA_exp_width: Int, inW_exp_width: Int, outWidth: Int, elemW: Seq[In
     adder.io.y
   }
 
-  io.out_exp := Mux(io.modeDecoded.numOutputs === 1.U, sums(0).pad(outWidth), Mux(io.modeDecoded.numOutputs === 2.U, VecInit(sums(0).pad(outWidth/2), sums(2).pad(outWidth/2)).asUInt, VecInit(sums.map(_.pad(outWidth/4))).asUInt))
+  io.out_exp := Mux(io.modeDecoded.numOutputs === 1.U, sums(0).pad(outWidth),
+    Mux(io.modeDecoded.numOutputs === 2.U,
+      Mux(io.modeDecoded.actInputs === 1.U,
+        VecInit(sums(0).pad(outWidth/2), sums(1).pad(outWidth/2)).asUInt,
+        VecInit(sums(0).pad(outWidth/2), sums(2).pad(outWidth/2)).asUInt),
+      VecInit(sums.map(_.pad(outWidth/4))).asUInt))
 
 }
 

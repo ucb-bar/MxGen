@@ -99,7 +99,7 @@ class MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
 
     // MxConfig.mxGemmini supports FP4/FP6_E3M2/FP8_E4M3 (modes 0, 4, 8).
     // Override product/acc to Custom(8,8) (BF16-like) to match old test precision.
-    val config = MxConfig.mxGemmini.copy(
+    val config = MxConfig.all.copy(
       productFormat = MxFormat(8, 8),
       accFormat = MxFormat(8, 8)
     )
@@ -202,22 +202,31 @@ class MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
                 val vals   = raws.map(r => decodeSmall(FP4_E2M1, r & 0xF))
                 (packed, vals, f"fp4 acts: ${raws.map(r => f"0x${r & 0xF}%X").mkString(", ")} -> ${vals.mkString(", ")}")
 
-                case 1 => // fp6: 2 values, each in its half-slot (6 bits each)
+                case 1 if aAlt => // fp6 E3M2: dual-element, 2 values in half-slots (6b each)
                 require(raws.length == 2)
                 val packed = pack2IntoHalves(raws(0), raws(1), elemBits = 6, totalW)
-                val fmt    = if (aAlt) FP6_E3M2 else FP6_E2M3
-                val vals   = raws.map(r => decodeSmall(fmt, r & 0x3F))
-                val nm     = if (aAlt) "fp6 E3M2" else "fp6 E2M3"
-                (packed, vals, s"$nm acts: ${raws.map(r => f"0x${r & 0x3F}%02X").mkString(", ")} -> ${vals.mkString(", ")}")
+                val vals   = raws.map(r => decodeSmall(FP6_E3M2, r & 0x3F))
+                (packed, vals, s"fp6 E3M2 acts: ${raws.map(r => f"0x${r & 0x3F}%02X").mkString(", ")} -> ${vals.mkString(", ")}")
 
-                case 2 => // fp8: 1 value goes at bit 0, rest padding
+                case 1 => // fp6 E2M3: single-element (sigWidth=4), 1 value at bit 0
+                require(raws.length == 1)
+                val a0     = raws.head & 0x3F
+                val packed = BigInt(a0)
+                val vals   = Seq(decodeSmall(FP6_E2M3, a0))
+                (packed, vals, f"fp6 E2M3 act: 0x$a0%02X -> ${vals.head}")
+
+                case 2 if aAlt => // fp8 E5M2: dual-element (sigWidth=3), 2 values in half-slots (8b each)
+                require(raws.length == 2)
+                val packed = pack2IntoHalves(raws(0), raws(1), elemBits = 8, totalW)
+                val vals   = raws.map(r => decodeSmall(FP8_E5M2, r & 0xFF))
+                (packed, vals, s"fp8 E5M2 acts: ${raws.map(r => f"0x${r & 0xFF}%02X").mkString(", ")} -> ${vals.mkString(", ")}")
+
+                case 2 => // fp8 E4M3: single-element (sigWidth=4), 1 value at bit 0
                 require(raws.length == 1)
                 val a0     = raws.head & 0xFF
-                val packed = BigInt(a0) // stays at [7:0], upper bits are padding
-                val fmt    = if (aAlt) FP8_E5M2 else FP8_E4M3
-                val vals   = Seq(decodeSmall(fmt, a0))
-                val nm     = if (aAlt) "fp8 E5M2" else "fp8 E4M3"
-                (packed, vals, f"$nm act: 0x$a0%02X -> ${vals.head}")
+                val packed = BigInt(a0)
+                val vals   = Seq(decodeSmall(FP8_E4M3, a0))
+                (packed, vals, f"fp8 E4M3 act: 0x$a0%02X -> ${vals.head}")
             }
         }
 
@@ -230,22 +239,31 @@ class MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
                 val vals   = raws.map(r => decodeSmall(FP4_E2M1, r & 0xF))
                 (packed, vals, f"fp4 weis: ${raws.map(r => f"0x${r & 0xF}%X").mkString(", ")} -> ${vals.mkString(", ")}")
 
-                case 1 => // fp6 weights: 2 values in half-slots (6b)
+                case 1 if wAlt => // fp6 E3M2: dual-element, 2 values in half-slots (6b each)
                 require(raws.length == 2)
                 val packed = pack2IntoHalves(raws(0), raws(1), elemBits = 6, totalW)
-                val fmt    = if (wAlt) FP6_E3M2 else FP6_E2M3
-                val vals   = raws.map(r => decodeSmall(fmt, r & 0x3F))
-                val nm     = if (wAlt) "fp6 E3M2" else "fp6 E2M3"
-                (packed, vals, s"$nm weis: ${raws.map(r => f"0x${r & 0x3F}%02X").mkString(", ")} -> ${vals.mkString(", ")}")
+                val vals   = raws.map(r => decodeSmall(FP6_E3M2, r & 0x3F))
+                (packed, vals, s"fp6 E3M2 weis: ${raws.map(r => f"0x${r & 0x3F}%02X").mkString(", ")} -> ${vals.mkString(", ")}")
 
-                case 2 => // fp8 weights: 1 value at bit0
+                case 1 => // fp6 E2M3: single-element (sigWidth=4), 1 value at bit 0
+                require(raws.length == 1)
+                val w0     = raws.head & 0x3F
+                val packed = BigInt(w0)
+                val vals   = Seq(decodeSmall(FP6_E2M3, w0))
+                (packed, vals, f"fp6 E2M3 wei: 0x$w0%02X -> ${vals.head}")
+
+                case 2 if wAlt => // fp8 E5M2: dual-element (sigWidth=3), 2 values in half-slots (8b each)
+                require(raws.length == 2)
+                val packed = pack2IntoHalves(raws(0), raws(1), elemBits = 8, totalW)
+                val vals   = raws.map(r => decodeSmall(FP8_E5M2, r & 0xFF))
+                (packed, vals, s"fp8 E5M2 weis: ${raws.map(r => f"0x${r & 0xFF}%02X").mkString(", ")} -> ${vals.mkString(", ")}")
+
+                case 2 => // fp8 E4M3: single-element (sigWidth=4), 1 value at bit0
                 require(raws.length == 1)
                 val w0     = raws.head & 0xFF
                 val packed = BigInt(w0)
-                val fmt    = if (wAlt) FP8_E5M2 else FP8_E4M3
-                val vals   = Seq(decodeSmall(fmt, w0))
-                val nm     = if (wAlt) "fp8 E5M2" else "fp8 E4M3"
-                (packed, vals, f"$nm wei: 0x$w0%02X -> ${vals.head}")
+                val vals   = Seq(decodeSmall(FP8_E4M3, w0))
+                (packed, vals, f"fp8 E4M3 wei: 0x$w0%02X -> ${vals.head}")
             }
         }
 
@@ -260,6 +278,20 @@ class MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
               val (ai, wi) = pairs(lane)
               Some(toBF16(aVals(ai) * wVals(wi) + c))
 
+            case (2,1) => // 2 acts × 1 wei → 2 outputs, broadcast to lane pairs
+              lane match {
+                case 0 | 1 => Some(toBF16(aVals(0) * wVals(0) + c))
+                case 2 | 3 => Some(toBF16(aVals(1) * wVals(0) + c))
+                case _     => None
+              }
+
+            case (1,2) => // 1 act × 2 weis → 2 outputs, broadcast to lane pairs
+              lane match {
+                case 0 | 1 => Some(toBF16(aVals(0) * wVals(0) + c))
+                case 2 | 3 => Some(toBF16(aVals(0) * wVals(1) + c))
+                case _     => None
+              }
+
             case (1,1) =>
               if (lane == 0) Some(toBF16(aVals(0) * wVals(0) + c)) else None
 
@@ -270,21 +302,21 @@ class MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
 
         // Variants: keep same semantic knobs (type + altfmt), but NEW lane counts
         val aVariants = Seq(
-          // ("A: 2×fp4",             0, false, () => Seq(genSmall(FP4_E2M1), genSmall(FP4_E2M1))),
-          // ("A: 2×fp6 (E2M3 alt0)", 1, false, () => Seq(genSmall(FP6_E2M3), genSmall(FP6_E2M3))),
-          // ("A: 2×fp6 (E3M2 alt1)", 1, true,  () => Seq(genSmall(FP6_E3M2), genSmall(FP6_E3M2))),
-          ("A: 1×fp8 (E4M3 alt0)", 2, false, () => Seq(genSmall(FP8_E4M3))),
-          // // ("A: 1×fp8 (E5M2 alt1)", 2, true,  () => Seq(genSmall(FP8_E5M2)))
+          ("A: 2×fp4",             0, false, () => Seq(genSmall(FP4_E2M1), genSmall(FP4_E2M1))),
+          ("A: 1×fp6 (E2M3)",      1, false, () => Seq(genSmall(FP6_E2M3))),
+          ("A: 2×fp6 (E3M2)",     1, true,  () => Seq(genSmall(FP6_E3M2), genSmall(FP6_E3M2))),
+          ("A: 1×fp8 (E4M3)",     2, false, () => Seq(genSmall(FP8_E4M3))),
+          ("A: 2×fp8 (E5M2)",     2, true,  () => Seq(genSmall(FP8_E5M2), genSmall(FP8_E5M2)))
         )
         val wVariants = Seq(
-          // ("W: 2×fp4",             0, false, () => Seq(genSmall(FP4_E2M1), genSmall(FP4_E2M1))),
-          // ("W: 2×fp6 (E2M3 alt0)", 1, false, () => Seq(genSmall(FP6_E2M3), genSmall(FP6_E2M3))),
-          // ("W: 2×fp6 (E3M2 alt1)", 1, true,  () => Seq(genSmall(FP6_E3M2), genSmall(FP6_E3M2))),
-          ("W: 1×fp8 (E4M3 alt0)", 2, false, () => Seq(genSmall(FP8_E4M3))),
-          // // ("W: 1×fp8 (E5M2 alt1)", 2, true,  () => Seq(genSmall(FP8_E5M2)))
+          ("W: 2×fp4",             0, false, () => Seq(genSmall(FP4_E2M1), genSmall(FP4_E2M1))),
+          ("W: 1×fp6 (E2M3)",      1, false, () => Seq(genSmall(FP6_E2M3))),
+          ("W: 2×fp6 (E3M2)",     1, true,  () => Seq(genSmall(FP6_E3M2), genSmall(FP6_E3M2))),
+          ("W: 1×fp8 (E4M3)",     2, false, () => Seq(genSmall(FP8_E4M3))),
+          ("W: 2×fp8 (E5M2)",     2, true,  () => Seq(genSmall(FP8_E5M2), genSmall(FP8_E5M2)))
         )
 
-        val trialsPerCombo = 40
+        val trialsPerCombo = 10
         h.io.enable.poke(true.B)
 
         // ------------------------------------------------------------------
@@ -304,15 +336,15 @@ class MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
             // aAlt/wAlt are NOT used by the current RTL hookup (typeA/typeW only depend on mx_format),
             // but we keep them in the signature so the rest of the test stays the same.
 
-            def expSigFromMxFormat(fmt: Int): (Int, Int) = fmt match {
-                case 0 => (2, 2) // FP8? (as in your snippet)
-                case 1 => (3, 3) // FP6
-                case 2 => (4, 4) // FP4
+            def expSigFromMxFormat(fmt: Int, alt: Boolean): (Int, Int) = fmt match {
+                case 0 => (2, 2) // FP4
+                case 1 => if (alt) (3, 3) else (2, 4) // FP6: E3M2 vs E2M3
+                case 2 => if (alt) (5, 3) else (4, 4) // FP8: E5M2 vs E4M3
                 case other => throw new IllegalArgumentException(s"bad mx_format=$other")
             }
 
-            val (aExp, aSig) = expSigFromMxFormat(aType)
-            val (wExp, wSig) = expSigFromMxFormat(wType)
+            val (aExp, aSig) = expSigFromMxFormat(aType, aAlt)
+            val (wExp, wSig) = expSigFromMxFormat(wType, wAlt)
 
             // Poke type_a/type_w (MxTypeBundle has fields exp/sig per your snippet)
             h.io.type_a.exp.poke(aExp.U)
@@ -327,7 +359,6 @@ class MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
         for ((aName, aType, aAlt, aGen) <- aVariants) {
           for ((wName, wType, wAlt, wGen) <- wVariants) {
             println(s"\n==== Combo: $aName  vs  $wName  (a_type=$aType alt=${if(aAlt)1 else 0}; w_type=$wType alt=${if(wAlt)1 else 0}) ====")
-            if (aType == wType) {
               for (t <- 0 until trialsPerCombo) {
                 // --------------------- Generate stimuli ---------------------
                 val aRaws = aGen()
@@ -387,7 +418,6 @@ class MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
                 h.io.out_bf16.expect(packedExp.U, s"trial $t packed expect mismatch")
                 println(s"  RESULT: PASS (trial $t)")
               }
-            }
           }
         }
 
@@ -415,7 +445,7 @@ class MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
   // -----------------------------------------------------------------------
   it should "run user-defined 12-bit activation and weight inputs and print lane outputs" in {
 
-    val config = MxConfig.mxGemmini.copy(
+    val config = MxConfig.all.copy(
       productFormat = MxFormat(8, 8),
       accFormat = MxFormat(8, 8)
     )

@@ -4,7 +4,6 @@ import chisel3._
 import chisel3.util._
 
 class MxPE(config: MxConfig, lut: Boolean) extends Module {
-  require(config.inPE_wei_totalWidth == config.inPE_act_totalWidth, "inPE_wei_totalWidth must equal inPE_act_totalWidth for this MxPE implementation")
   val io = IO(new Bundle {
     val modeDecoded = Input(new mxMode())
     val in_a = Input(UInt(config.inPE_act_totalWidth.W))

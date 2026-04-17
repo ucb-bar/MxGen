@@ -13,7 +13,6 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
   val outType4 = config.productFormat
   val cType = config.accFormat
   val totalAdderWidth = 4*(outType4.exp + 1)
-  private val recWidth = cType.exp + cType.sig + 1
 
   val io = IO(new Bundle {
     val in_activation = Input(UInt(config.inActBusWidth.W))
@@ -22,26 +21,21 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
     val type_w = Input(new MxTypeBundle())
     val mode = Input(new mxMode())
     val enable = Input(Bool())
-    val rec_c = Input(UInt((config.numActiveOutputLanes * recWidth).W))
-    val out = Output(UInt((config.numActiveOutputLanes * recWidth).W))
+    val rec_c = Input(UInt((config.numActiveOutputLanes * config.accFormat.recoded).W))
+    val out = Output(UInt((config.numActiveOutputLanes * config.accFormat.recoded).W))
   })
 
-  // ---------------------------------------------------------------------------
-  // Internal type/mode aliases.
-  // When only one format or mode is configured, these are hardwired constants
-  // so that FIRRTL constant propagation eliminates all downstream dispatch muxes.
-  // ---------------------------------------------------------------------------
-  private val actType: MxTypeBundle = if (config.needsRuntimeActType) io.type_a else {
+  val actType: MxTypeBundle = if (config.needsRuntimeActType) io.type_a else {
     val t = Wire(new MxTypeBundle())
     val f = config.actFormats.head
     t.exp := f.expWidth.U; t.sig := f.sigWidth.U; t
   }
-  private val weiType: MxTypeBundle = if (config.needsRuntimeWeiType) io.type_w else {
+  val weiType: MxTypeBundle = if (config.needsRuntimeWeiType) io.type_w else {
     val t = Wire(new MxTypeBundle())
     val f = config.weiFormats.head
     t.exp := f.expWidth.U; t.sig := f.sigWidth.U; t
   }
-  private val modeWire: mxMode = if (config.needsRuntimeMode) io.mode else {
+  val modeWire: mxMode = if (config.needsRuntimeMode) io.mode else {
     val m = Wire(new mxMode())
     val p = config.modesSupported.head
     m.actWidth   := p.actWidth.U
@@ -281,9 +275,9 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
   // ---------------------------------------------------------------------------
   // For the 4-output path, the PE lane width determines which normalizer sizes
   // are valid. Only generate normalizers that fit within the lane.
-  private val out4LaneWidth = config.outPE_width / 4
-  private val need4Norm6 = config.needsOut4 && out4LaneWidth >= 6  // 3×3 products
-  private val need4Norm5 = config.needsOut4 && out4LaneWidth >= 5  // mixed 2×3/3×2 products
+  val out4LaneWidth = config.outPE_width / 4
+  val need4Norm6 = config.needsOut4 && out4LaneWidth >= 6  // 3×3 products
+  val need4Norm5 = config.needsOut4 && out4LaneWidth >= 5  // mixed 2×3/3×2 products
 
   val out4_toRec: Option[Vec[RawFloat]] = if (config.needsOut4) Some(VecInit.tabulate(4) { i =>
     val n1 = if (need4Norm6) Some(normalize(out_pe(i*(config.outPE_width/4) + 5, i*config.outPE_width/4), outType4.sig - 1, 6)) else None
@@ -319,8 +313,8 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
     )
   }) else None
 
-  private val out2HalfWidth = config.outPE_width / 2
-  private val need2Norm7 = config.needsOut2 && out2HalfWidth >= 7
+  val out2HalfWidth = config.outPE_width / 2
+  val need2Norm7 = config.needsOut2 && out2HalfWidth >= 7
 
   val out2_toRec: Option[Vec[RawFloat]] = if (config.needsOut2) Some(VecInit.tabulate(2) { i =>
     val n1 = if (need2Norm7) Some(normalize(out_pe(i*(config.outPE_width/2) + 6, i*config.outPE_width/2), outType2.sig - 1, 7)) else None
@@ -366,7 +360,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
   // modules (each Mux branch instantiates a RoundAnyRawFNToRecFN).
   // ---------------------------------------------------------------------------
   val addUnits = Seq.fill(config.numActiveOutputLanes)(Module(new hardfloatHelper.MxMulAddRecFN(cType.exp, cType.sig)))
-  val outputs = Wire(Vec(config.numActiveOutputLanes, UInt(recWidth.W)))
+  val outputs = Wire(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
 
   def resize(in: RawFloat, inT: MxFormat, outT: MxFormat): RawFloat = {
     val resize_unit = Module(new RoundAnyRawFNToRecFN(inT.exp, inT.sig, outT.exp, outT.sig, 0))
@@ -402,7 +396,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
             resize(out1_toRec.get(0), outType1, cType))
         }
     }
-    val recIn_c = io.rec_c.asTypeOf(Vec(config.numActiveOutputLanes, UInt(recWidth.W)))(i)
+    val recIn_c = io.rec_c.asTypeOf(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))(i)
 
     addUnits(i).io.roundingMode := hardfloat.consts.round_near_even
     addUnits(i).io.detectTininess := hardfloat.consts.tininess_afterRounding
