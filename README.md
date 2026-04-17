@@ -1,128 +1,88 @@
-# Description
+# MxGen
 
-This repository provides configurable **low-precision floating-point hardware generators** for microscaled datapaths. Supported formats include **fp4 E2M1**, **fp6** with **E3M2** and **E2M3**, and **fp8** with **E5M2** and **E4M3**. The generator can be used to build a fused **processing element (PE)** that supports these formats.
+Configurable low-precision floating-point hardware generators for microscaled (MX) datapaths, written in Chisel.
 
-The modes below correspond specifically to the **PE multiplication modes**.
+## Supported Formats
 
-## Mode 0
+| Format | Exponent | Significand | Bit Width | Elements per input |
+|--------|----------|-------------|-----------|------------------|
+| FP4 (E2M1) | 2 | 2 | 4 | 2 (dual) |
+| FP6 E2M3 | 2 | 4 | 6 | 1 (single) |
+| FP6 E3M2 | 3 | 3 | 6 | 2 (dual) |
+| FP8 E4M3 | 4 | 4 | 8 | 1 (single) |
+| FP8 E5M2 | 5 | 3 | 8 | 2 (dual) |
 
-* 2 2b inputs (input A)
-* 4 2b inputs (input B)
-* 4 4b outputs
+Dual-element formats (significand width < 4) pack two values per output slot and produce 2 or 4 outputs. Single-element formats produce 1 output.
 
-**Used by:**
+## PE Multiplication Modes
 
-* fp4 x fp4
+The PE contains a 2x2 MACU (Multiply-Accumulate Unit) grid. Each format combination maps to a mode based on the activation and weight significand widths:
 
----
+| Mode | Act Sig | Wei Sig | Act Inputs | Wei Inputs | Outputs | Format Combinations |
+|------|---------|---------|------------|------------|---------|---------------------|
+| 0 | 2 | 2 | 2 | 2 | 4 | FP4 x FP4 |
+| 1 | 2 | 3 | 2 | 2 | 4 | FP4 x E3M2, FP4 x E5M2 |
+| 2 | 2 | 4 | 2 | 1 | 2 | FP4 x E2M3, FP4 x E4M3 |
+| 3 | 3 | 2 | 2 | 2 | 4 | E3M2 x FP4, E5M2 x FP4 |
+| 4 | 3 | 3 | 2 | 2 | 4 | E3M2 x E3M2, E3M2 x E5M2, E5M2 x E3M2, E5M2 x E5M2 |
+| 5 | 3 | 4 | 2 | 1 | 2 | E3M2 x E2M3, E3M2 x E4M3, E5M2 x E2M3, E5M2 x E4M3 |
+| 6 | 4 | 2 | 1 | 2 | 2 | E2M3 x FP4, E4M3 x FP4 |
+| 7 | 4 | 3 | 1 | 2 | 2 | E2M3 x E3M2, E2M3 x E5M2, E4M3 x E3M2, E4M3 x E5M2 |
+| 8 | 4 | 4 | 1 | 1 | 1 | E2M3 x E2M3, E2M3 x E4M3, E4M3 x E2M3, E4M3 x E4M3 |
 
-## Mode 1
+## Hardware Configurations
 
-* 2 2b inputs (input A)
-* 4 3b inputs (input B)
-* 4 5b outputs
+`MxConfig` controls which formats and modes are elaborated. Only the hardware needed for the selected formats is generated.
 
-**Used by:**
+| Config | Formats | Modes | Cross-format |
+|--------|---------|-------|--------------|
+| `MxConfig.fp4Only` | FP4 | 0 | N/A |
+| `MxConfig.fp6` | E2M3, E3M2 | 4, 5, 7, 8 | Yes |
+| `MxConfig.fp8` | E4M3, E5M2 | 4, 5, 7, 8 | Yes |
+| `MxConfig.mxGemmini` | FP4, E3M2, E4M3 | 0, 4, 8 | No (same-format only) |
+| `MxConfig.all` | All 5 formats | 0-8 | Yes |
 
-* fp4 x fp6 (E3M2)
-* fp4 x fp8 (E5M2)
+Key `MxConfig` parameters:
 
----
+- `actFormats` / `weiFormats` — which MX formats to support
+- `expAdderWidths` — per-lane exponent adder widths (must be wide enough for the widest exponent; use `Seq(5,5,5,5)` when E5M2 is included)
+- `productFormat` / `accFormat` — intermediate product and accumulator precision
+- `modesOverride` — explicitly restrict which PE modes are instantiated
+- `laneOutputWidths` — optional per-lane output bit widths
 
-## Mode 2
+## Building and Testing
 
-* 2 2b inputs (input A)
-* 1 4b inputs (input B)
-* 2 7b outputs
+Requires [Mill](https://mill-build.com/).
 
-**Used by:**
+```bash
+# Compile
+./mill test.compile
 
-* fp4 x fp6 (E2M3)
-* fp4 x fp8 (E4M3)
+# Run a single test
+./mill test.testOnly mxgen.MxFpMul_FP4Only_BF16Out_Spec
 
----
+# Run all tests with summary
+./run_tests.sh
+```
 
-## Mode 3
+Tests are listed in `test/tests.yml`. To add a new test, append an entry:
 
-* 2 3b inputs (input A)
-* 4 2b inputs (input B)
-* 4 5b outputs
+```yaml
+- spec: mxgen.YourNewTest_Spec
+  label: Your Test Label
+```
 
-**Used by:**
+## Project Structure
 
-* fp6 (E3M2) x fp4
-* fp8 (E5M2) x fp4
-
----
-
-## Mode 4
-
-* 2 3b inputs (input A)
-* 4 3b inputs (input B)
-* 4 6b outputs
-
-**Used by:**
-
-* fp6 (E3M2) x fp6 (E3M2)
-* fp6 (E3M2) x fp8 (E5M2)
-* fp8 (E5M2) x fp6 (E3M2)
-* fp8 (E5M2) x fp8 (E5M2)
-
----
-
-## Mode 5
-
-* 2 3b inputs (input A)
-* 1 4b inputs (input B)
-* 2 7b outputs
-
-**Used by:**
-
-* fp6 (E3M2) x fp6 (E2M3)
-* fp6 (E3M2) x fp8 (E4M3)
-* fp8 (E5M2) x fp6 (E2M3)
-* fp8 (E5M2) x fp8 (E4M3)
-
----
-
-## Mode 6
-
-* 1 4b inputs (input A)
-* 2 2b inputs (input B)
-* 2 7b outputs
-
-**Used by:**
-
-* fp6 (E2M3) x fp4
-* fp8 (E4M3) x fp4
-
----
-
-## Mode 7
-
-* 1 4b inputs (input A)
-* 2 3b inputs (input B)
-* 2 7b outputs
-
-**Used by:**
-
-* fp6 (E2M3) x fp6 (E3M2)
-* fp6 (E2M3) x fp8 (E5M2)
-* fp8 (E4M3) x fp6 (E3M2)
-* fp8 (E4M3) x fp8 (E5M2)
-
----
-
-## Mode 8
-
-* 1 4b inputs (input A)
-* 1 4b inputs (input B)
-* 1 8b outputs
-
-**Used by:**
-
-* fp6 (E2M3) x fp6 (E2M3)
-* fp6 (E2M3) x fp8 (E4M3)
-* fp8 (E4M3) x fp6 (E2M3)
-* fp8 (E4M3) x fp8 (E4M3)
-
+```
+src/main/scala/mxgen/
+  MxParameters.scala   # MxFormat, MxPEParams, MxConfig definitions
+  MxFPMul.scala        # Top-level fused multiply unit
+  MxPE.scala           # Processing element (2x2 MACU grid)
+  MxExp.scala          # Exponent adder (4 lanes)
+  MACU.scala           # Multiply-accumulate compute unit
+  Multiplier2x2.scala  # Base 2x2 unsigned multiplier
+  Classifier.scala     # Format classification and mode selection
+test/src/mxgen/
+  *.scala              # tests
+```
