@@ -17,10 +17,10 @@ class MxFpMulHarnessBf16Out_NewIO(config: MxConfig, lut: Boolean)
 
   val dut = Module(new MxFpMul(config, lut))
 
-  private val accExp    = config.accFormat.exp
-  private val accSig    = config.accFormat.sig
-  private val accRecW   = config.accFormat.recoded
-  private val numActive = config.numActiveOutputLanes
+  val accExp    = config.accFormat.exp
+  val accSig    = config.accFormat.sig
+  val accRecW   = config.accFormat.recoded
+  val numActive = config.numActiveOutputLanes
 
   val io = IO(new Bundle {
     val in_activation = Input(UInt(dut.io.in_activation.getWidth.W))
@@ -57,8 +57,8 @@ class MxFpMulHarnessBf16Out_NewIO(config: MxConfig, lut: Boolean)
   // -------- C input: BF16 --> recFN(accFormat) --------
   // Convert the 16-bit BF16 scalar to recFN(8,8), then round-convert down/up
   // to recFN(accFormat) using RoundAnyRawFNToRecFN so any accFormat works.
-  private val recCBf16 = hardfloat.recFNFromFN(8, 8, io.c_raw)  // 17b
-  private val recCAcc: UInt = if (accExp == 8 && accSig == 8) {
+  val recCBf16 = hardfloat.recFNFromFN(8, 8, io.c_raw)  // 17b
+  val recCAcc: UInt = if (accExp == 8 && accSig == 8) {
     recCBf16
   } else {
     val rawC = rawFloatFromRecFN(8, 8, recCBf16)
