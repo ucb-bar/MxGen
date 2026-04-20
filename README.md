@@ -37,9 +37,12 @@ The PE contains a 2x2 MACU (Multiply-Accumulate Unit) grid. Each format combinat
 | Config | Formats | Modes | Cross-format |
 |--------|---------|-------|--------------|
 | `MxConfig.fp4Only` | FP4 | 0 | N/A |
+| `MxConfig(Set(FP6_E3M2), Set(FP6_E3M2))` | E3M2 | 4 | N/A |
+| `MxConfig(Set(FP8_E4M3), Set(FP8_E4M3))` | E4M3 | 8 | N/A |
 | `MxConfig.fp6` | E2M3, E3M2 | 4, 5, 7, 8 | Yes |
 | `MxConfig.fp8` | E4M3, E5M2 | 4, 5, 7, 8 | Yes |
 | `MxConfig.mxGemmini` | FP4, E3M2, E4M3 | 0, 4, 8 | No (same-format only) |
+| All formats, same-format only | All 5 formats | 0, 4, 8 | No (via `modesOverride`) |
 | `MxConfig.all` | All 5 formats | 0-8 | Yes |
 
 Key `MxConfig` parameters:
