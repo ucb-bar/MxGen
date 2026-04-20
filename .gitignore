@@ -5,3 +5,4 @@ generated/
 .history
 .metals
 .vscode
+run-syn-mxpe.sh
