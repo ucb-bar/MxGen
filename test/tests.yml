@@ -1,6 +1,12 @@
 - spec: mxgen.MxFpMul_FP4Only_BF16Out_Spec
   label: FP4 Only
 
+- spec: mxgen.MxFpMul_FP6E3M2Only_BF16Out_Spec
+  label: FP6 E3M2 Only
+
+- spec: mxgen.MxFpMul_FP8E4M3Only_BF16Out_Spec
+  label: FP8 E4M3 Only
+
 - spec: mxgen.MxFpMul_FP6_BF16Out_Spec
   label: FP6 (E2M3+E3M2)
 
@@ -9,6 +15,9 @@
 
 - spec: mxgen.MxFpMul_MxGemmini_BF16Out_Spec
   label: MxGemmini (FP4+E3M2+E4M3)
+
+- spec: mxgen.MxFpMul_NoCross_BF16Out_Spec
+  label: All Formats, No Cross
 
 - spec: mxgen.MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
   label: All Formats

@@ -17,6 +17,11 @@ class MxFpMulHarnessBf16Out_NewIO(config: MxConfig, lut: Boolean)
 
   val dut = Module(new MxFpMul(config, lut))
 
+  private val accExp    = config.accFormat.exp
+  private val accSig    = config.accFormat.sig
+  private val accRecW   = config.accFormat.recoded
+  private val numActive = config.numActiveOutputLanes
+
   val io = IO(new Bundle {
     val in_activation = Input(UInt(dut.io.in_activation.getWidth.W))
     val type_a        = Input(chiselTypeOf(dut.io.type_a))
@@ -31,61 +36,83 @@ class MxFpMulHarnessBf16Out_NewIO(config: MxConfig, lut: Boolean)
     // 4 × BF16 packed LSB-first (lane0 in [15:0])
     val out_bf16      = Output(UInt(64.W))
 
-    // Raw recFN(8,8) output from DUT: 4 × 17b = 68b, lane0 at [16:0]
-    val out_recfn     = Output(UInt(dut.io.out.getWidth.W))
+    // Widened output: each DUT lane widened from recFN(accFormat) up to
+    // recFN(8,8) (BF16), so the port is always 4 × 17 = 68b, lane0 at [16:0].
+    // Missing lanes (numActive < 4) read as zero.
+    val out_recfn     = Output(UInt(68.W))
 
     // Observe what rec_c actually got applied
     val rec_c_applied = Output(UInt(dut.io.rec_c.getWidth.W))
   })
 
-  // printf(p"type_a: ${io.type_a}, type_w: ${io.type_w}, mode\n")
   val computedMode = requiredPEMode(io.type_a, io.type_w)
   dut.io.mode := computedMode
 
-  // Pass-through
   dut.io.in_activation := io.in_activation
   dut.io.type_a        := io.type_a
   dut.io.in_weights    := io.in_weights
   dut.io.type_w        := io.type_w
-//   dut.io.mode          := io.mode
   dut.io.enable        := io.enable
 
-  // BF16 -> recFN(8,8) (17b)
-  private val recC = hardfloat.recFNFromFN(8, 8, io.c_raw)
+  // -------- C input: BF16 --> recFN(accFormat) --------
+  // Convert the 16-bit BF16 scalar to recFN(8,8), then round-convert down/up
+  // to recFN(accFormat) using RoundAnyRawFNToRecFN so any accFormat works.
+  private val recCBf16 = hardfloat.recFNFromFN(8, 8, io.c_raw)  // 17b
+  private val recCAcc: UInt = if (accExp == 8 && accSig == 8) {
+    recCBf16
+  } else {
+    val rawC = rawFloatFromRecFN(8, 8, recCBf16)
+    val cConv = Module(new RoundAnyRawFNToRecFN(8, 8, accExp, accSig, 0))
+    cConv.io.in             := rawC
+    cConv.io.roundingMode   := hardfloat.consts.round_near_even
+    cConv.io.detectTininess := hardfloat.consts.tininess_afterRounding
+    cConv.io.invalidExc     := false.B
+    cConv.io.infiniteExc    := false.B
+    cConv.io.out
+  }
 
-  // Size-match to dut.io.rec_c width
-  private val wantW = dut.io.rec_c.getWidth
-  private val haveW = recC.getWidth
-  private val recSized =
-    if (haveW == wantW) recC
-    else if (haveW > wantW) recC(wantW - 1, 0)
-    else Cat(recC, recC, recC, recC)
-
-  dut.io.rec_c := recSized
+  // Broadcast the single scalar C to every active DUT lane.
+  dut.io.rec_c := Cat(Seq.fill(numActive)(recCAcc).reverse)
   io.rec_c_applied := dut.io.rec_c
 
-  // Convert dut.io.out lanes to BF16 raw
-  private val dutW = dut.io.out.getWidth
-  require(dutW % 4 == 0, s"DUT out width ($dutW) must be divisible by 4")
-  private val laneW = dutW / 4
+  // -------- Output lanes: recFN(accFormat) --> recFN(8,8) (widen up to BF16) --------
+  require(dut.io.out.getWidth == numActive * accRecW,
+    s"DUT out width ${dut.io.out.getWidth} != numActiveOutputLanes*$accRecW")
 
-  val lanes = Wire(Vec(4, UInt(laneW.W)))
+  val lanesAcc = Wire(Vec(4, UInt(accRecW.W)))
   for (i <- 0 until 4) {
-    val hi = (i + 1) * laneW - 1
-    val lo = i * laneW
-    lanes(i) := dut.io.out(hi, lo)
+    if (i < numActive) {
+      val hi = (i + 1) * accRecW - 1
+      val lo = i * accRecW
+      lanesAcc(i) := dut.io.out(hi, lo)
+    } else {
+      lanesAcc(i) := 0.U
+    }
+  }
+
+  // Widen each lane from recFN(accFormat) up to recFN(8,8). If accFormat is
+  // already BF16, the resize is a no-op and we skip instantiating the module.
+  val lanesBf16Rec = Wire(Vec(4, UInt(17.W)))
+  for (i <- 0 until 4) {
+    if (accExp == 8 && accSig == 8) {
+      lanesBf16Rec(i) := lanesAcc(i)
+    } else {
+      val rawLane = rawFloatFromRecFN(accExp, accSig, lanesAcc(i))
+      val up = Module(new RoundAnyRawFNToRecFN(accExp, accSig, 8, 8, 0))
+      up.io.in             := rawLane
+      up.io.roundingMode   := hardfloat.consts.round_near_even
+      up.io.detectTininess := hardfloat.consts.tininess_afterRounding
+      up.io.invalidExc     := false.B
+      up.io.infiniteExc    := false.B
+      lanesBf16Rec(i) := up.io.out
+    }
   }
 
   val lanesBF16 = Wire(Vec(4, UInt(16.W)))
-  if (laneW == 17) {
-    for (i <- 0 until 4) lanesBF16(i) := hardfloat.fNFromRecFN(8, 8, lanes(i))
-  } else {
-    require(laneW == 16, s"Expected lane width 16 (BF16) or 17 (recFN), got $laneW")
-    for (i <- 0 until 4) lanesBF16(i) := lanes(i)(15,0)
-  }
+  for (i <- 0 until 4) lanesBF16(i) := hardfloat.fNFromRecFN(8, 8, lanesBf16Rec(i))
 
-  io.out_bf16  := Cat(lanesBF16.reverse) // lane0 at [15:0]
-  io.out_recfn := dut.io.out             // raw 4×17b recFN, lane0 at [16:0]
+  io.out_bf16  := Cat(lanesBF16.reverse)    // lane0 at [15:0]
+  io.out_recfn := Cat(lanesBf16Rec.reverse) // lane0 at [16:0]
 }
 
 class MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
