@@ -276,8 +276,13 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
   // For the 4-output path, the PE lane width determines which normalizer sizes
   // are valid. Only generate normalizers that fit within the lane.
   val out4LaneWidth = config.outPE_width / 4
-  val need4Norm6 = config.needsOut4 && out4LaneWidth >= 6  // 3×3 products
-  val need4Norm5 = config.needsOut4 && out4LaneWidth >= 5  // mixed 2×3/3×2 products
+  val actSupports3b = config.actSupportFp6_1 || config.actSupportFp8_1
+  val weiSupports3b = config.weiSupportFp6_1 || config.weiSupportFp8_1
+  val need4Norm6 = config.needsOut4 && out4LaneWidth >= 6 &&
+    actSupports3b && weiSupports3b  // 3×3 products
+  val need4Norm5 = config.needsOut4 && out4LaneWidth >= 5 &&
+    ((config.actSupportFp4 && weiSupports3b) ||
+     (actSupports3b && config.weiSupportFp4))  // mixed 2×3/3×2 products
 
   val out4_toRec: Option[Vec[RawFloat]] = if (config.needsOut4) Some(VecInit.tabulate(4) { i =>
     val n1 = if (need4Norm6) Some(normalize(out_pe(i*(config.outPE_width/4) + 5, i*config.outPE_width/4), outType4.sig - 1, 6)) else None

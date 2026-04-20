@@ -158,8 +158,8 @@ object MxPEParams {
 case class MxConfig (
   actFormats:       Set[MxFormat]              = Set(MxFormat.FP4),
   weiFormats:       Set[MxFormat]              = Set(MxFormat.FP4),
-  productFormat:    MxFormat                   = MxFormat.FP8_E4M3,
-  accFormat:        MxFormat                   = MxFormat.FP8_E4M3,
+  productFormat:    MxFormat                   = MxFormat.Custom(8, 8),
+  accFormat:        MxFormat                   = MxFormat.Custom(8, 8),
   inActBusWidth:    Int                        = 12,
   inWeiBusWidth:    Int                        = 12,
   expAdderWidths:   Seq[Int]                   = Seq(4, 3, 3, 3),
@@ -289,7 +289,11 @@ object MxConfig {
     inActBusWidth = minBusWidth(MxFormat.all),
     inWeiBusWidth = minBusWidth(MxFormat.all),
     expAdderWidths = Seq(5, 5, 5, 5))
-  def fp4Only = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP4))
+  def fp4Only = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP4),
+    expAdderWidths = Seq(3, 3, 3, 3), 
+    // productFormat = MxFormat.Custom(3, 3),
+    // accFormat = MxFormat.Custom(6, 6)
+    )
   def fp6 = MxConfig(MxFormat.fp6, MxFormat.fp6)
   def fp8 = MxConfig(MxFormat.fp8, MxFormat.fp8,
     inActBusWidth = minBusWidth(MxFormat.fp8),
