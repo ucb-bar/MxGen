@@ -276,13 +276,16 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
   // For the 4-output path, the PE lane width determines which normalizer sizes
   // are valid. Only generate normalizers that fit within the lane.
   val out4LaneWidth = config.outPE_width / 4
-  val actSupports3b = config.actSupportFp6_1 || config.actSupportFp8_1
-  val weiSupports3b = config.weiSupportFp6_1 || config.weiSupportFp8_1
+  // Only generate a normalizer size if a 4-output mode actually produces that
+  // product width. Previously we gated on per-format support union, which
+  // over-instantiated when the configured mode set never pairs those widths
+  // (e.g. mxgemmini = {mode0, mode4, mode8} has no 2×3 / 3×2 products).
+  val out4SigPairs: Set[(Int, Int)] =
+    config.modesSupported.filter(_.numOutputs == 4).map(m => (m.actWidth, m.weiWidth)).toSet
   val need4Norm6 = config.needsOut4 && out4LaneWidth >= 6 &&
-    actSupports3b && weiSupports3b  // 3×3 products
+    out4SigPairs.contains((3, 3))  // 3×3 products
   val need4Norm5 = config.needsOut4 && out4LaneWidth >= 5 &&
-    ((config.actSupportFp4 && weiSupports3b) ||
-     (actSupports3b && config.weiSupportFp4))  // mixed 2×3/3×2 products
+    (out4SigPairs.contains((2, 3)) || out4SigPairs.contains((3, 2)))  // mixed 2×3/3×2
 
   val out4_toRec: Option[Vec[RawFloat]] = if (config.needsOut4) Some(VecInit.tabulate(4) { i =>
     val n1 = if (need4Norm6) Some(normalize(out_pe(i*(config.outPE_width/4) + 5, i*config.outPE_width/4), outType4.sig - 1, 6)) else None
@@ -360,52 +363,48 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
   }) else None
 
   // ---------------------------------------------------------------------------
-  // Add units and resize — only `numActiveOutputLanes` instantiated.
-  // The rawIn selection is gated by fixedNumOutputs to eliminate unused resize
-  // modules (each Mux branch instantiates a RoundAnyRawFNToRecFN).
+  // Add units — only `numActiveOutputLanes` instantiated.
+  // MxMulAddRecFN is the add side of a fused FMA (no actual multiplier). It
+  // accepts rawA directly at productFormat widths and widens inline, so the
+  // product→adder path is pure wiring plus a constant exp-bias shift and a
+  // fraction zero-pad. No per-lane RoundAnyRawFNToRecFN is needed.
   // ---------------------------------------------------------------------------
-  val addUnits = Seq.fill(config.numActiveOutputLanes)(Module(new hardfloatHelper.MxMulAddRecFN(cType.exp, cType.sig)))
+  val productFmt = config.productFormat
+  val addUnits = Seq.fill(config.numActiveOutputLanes)(
+    Module(new hardfloatHelper.MxMulAddRecFN(cType.exp, cType.sig, productFmt.exp, productFmt.sig)))
   val outputs = Wire(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
 
-  def resize(in: RawFloat, inT: MxFormat, outT: MxFormat): RawFloat = {
-    val resize_unit = Module(new RoundAnyRawFNToRecFN(inT.exp, inT.sig, outT.exp, outT.sig, 0))
-    resize_unit.io.in := in
-    resize_unit.io.roundingMode := hardfloat.consts.round_near_even
-    resize_unit.io.detectTininess := hardfloat.consts.tininess_afterRounding
-    resize_unit.io.invalidExc := false.B
-    resize_unit.io.infiniteExc := false.B
-    rawFloatFromRecFN(outT.exp, outT.sig, resize_unit.io.out)
-  }
-
+  // outType1/2/4 are all `config.productFormat`, so the RawFloats coming out
+  // of every out*_toRec path share a format and can be muxed directly.
   for (i <- 0 until config.numActiveOutputLanes) {
-    val rawIn: RawFloat = config.fixedNumOutputs match {
-      case Some(4) => resize(out4_toRec.get(i), outType4, cType)
-      case Some(2) => resize(out2_toRec.get(i), outType2, cType)
-      case Some(1) => resize(out1_toRec.get(0), outType1, cType)
+    val rawAtProduct: RawFloat = config.fixedNumOutputs match {
+      case Some(4) => out4_toRec.get(i)
+      case Some(2) => out2_toRec.get(i)
+      case Some(1) => out1_toRec.get(0)
       case Some(n) => throw new IllegalArgumentException(s"Unsupported fixedNumOutputs=$n")
       case None =>
         // Multiple numOutputs values — build mux with only available branches.
         // Use original indexing: out4 lane=i, out2 lane=i/2, out1 lane=0.
         if (config.needsOut4 && config.needsOut2 && config.needsOut1) {
-          Mux(modeWire.numOutputs === 4.U, resize(out4_toRec.get(i), outType4, cType),
-            Mux(modeWire.numOutputs === 2.U, resize(out2_toRec.get(i/2), outType2, cType),
-              resize(out1_toRec.get(0), outType1, cType)))
+          Mux(modeWire.numOutputs === 4.U, out4_toRec.get(i),
+            Mux(modeWire.numOutputs === 2.U, out2_toRec.get(i/2),
+              out1_toRec.get(0)))
         } else if (config.needsOut4 && config.needsOut2) {
-          Mux(modeWire.numOutputs === 4.U, resize(out4_toRec.get(i), outType4, cType),
-            resize(out2_toRec.get(i/2), outType2, cType))
+          Mux(modeWire.numOutputs === 4.U, out4_toRec.get(i),
+            out2_toRec.get(i/2))
         } else if (config.needsOut4 && config.needsOut1) {
-          Mux(modeWire.numOutputs === 4.U, resize(out4_toRec.get(i), outType4, cType),
-            resize(out1_toRec.get(0), outType1, cType))
+          Mux(modeWire.numOutputs === 4.U, out4_toRec.get(i),
+            out1_toRec.get(0))
         } else { // needsOut2 && needsOut1
-          Mux(modeWire.numOutputs === 2.U, resize(out2_toRec.get(i/2), outType2, cType),
-            resize(out1_toRec.get(0), outType1, cType))
+          Mux(modeWire.numOutputs === 2.U, out2_toRec.get(i/2),
+            out1_toRec.get(0))
         }
     }
     val recIn_c = io.rec_c.asTypeOf(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))(i)
 
     addUnits(i).io.roundingMode := hardfloat.consts.round_near_even
     addUnits(i).io.detectTininess := hardfloat.consts.tininess_afterRounding
-    addUnits(i).io.a := rawIn
+    addUnits(i).io.a := rawAtProduct
     addUnits(i).io.c := recIn_c
 
     outputs(i) := addUnits(i).io.out

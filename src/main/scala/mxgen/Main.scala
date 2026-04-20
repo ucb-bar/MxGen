@@ -103,14 +103,14 @@ object Main extends App {
       println(s"=== Elaborating MxFpMul: $name ===")
       println(config.describe)
       circt.stage.ChiselStage.emitSystemVerilogFile(
-        new RegisteredMxFpMul(config),
+        new MxFpMul(config, lut = false),
         Array("--target-dir", s"generated/$name")
       )
     }
     if (runBaseline) {
       println(s"=== Elaborating hardfloat baseline: $name ===")
       circt.stage.ChiselStage.emitSystemVerilogFile(
-        new RegisteredMxHardfloatFMA(config),
+        new MxHardfloatFMA(config),
         Array("--target-dir", s"generated/hardfloat-baseline/$name")
       )
     }

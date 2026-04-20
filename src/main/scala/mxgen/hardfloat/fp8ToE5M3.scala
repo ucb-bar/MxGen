@@ -4,44 +4,65 @@ import chisel3._
 import chisel3.util._
 import mxgen.hardfloat._
 
-//----------------------------------------------------------------------------
-//----------------------------------------------------------------------------
-class MxMulAddRecFNToRaw_preMul(expWidth: Int, sigWidth: Int) extends RawModule
+// MxMulAddRecFN — "multiply-add" with the multiply operand pinned to the
+// synthetic value 1.0, so the result is simply rawA + rec_c. We reuse
+// hardfloat's MulAddRecFN postMul (rather than AddRecFN) because AddRawFN's
+// alignment range is capped at sigWidth bits, whereas the FMA preMul aligns
+// across the full (sigWidth*3+3) sigSumWidth — required when rawA and rec_c
+// differ by more than sigWidth in exponent (e.g. accumulating a BF16
+// subnormal into a product).
+//
+// rawA arrives as a RawFloat directly (not recFN-encoded). It may be at a
+// narrower product format (aE<=expWidth, aS<=sigWidth); we widen inline by:
+//   sExpAligned  = rawA.sExp + (2^expWidth - 2^aE) + sigWidth + 3
+//   mulAddA_sig  = rawA.sig << (sigWidth - aS)     (leading 1 at bit sigWidth-1)
+// and feed the alignment logic directly — bypassing the redundant
+// rawFloatFromRecFN decode that stock MulAddRecFNToRaw_preMul would perform
+// on a recFN-encoded rawA. rawB is pinned (signB=0, isZeroB=false,
+// isInfB=false, sExpB=2^expWidth, sigB=1<<(sigWidth-1)) so signProd=rawA.sign
+// and mulAddA*mulAddB collapses to a shift — no multiplier is synthesized.
+class MxMulAddRecFN(expWidth: Int, sigWidth: Int,
+                    aExpWidth: Int = -1, aSigWidth: Int = -1) extends RawModule
 {
-    override def desiredName = s"MxMulAddRecFNToRaw_preMul_e${expWidth}_s${sigWidth}"
+    val aE = if (aExpWidth < 0) expWidth else aExpWidth
+    val aS = if (aSigWidth < 0) sigWidth else aSigWidth
+    require(aE <= expWidth && aS <= sigWidth,
+        s"MxMulAddRecFN: rawA widths (aE=$aE, aS=$aS) must be <= FMA widths " +
+        s"(expWidth=$expWidth, sigWidth=$sigWidth)")
+
+    override def desiredName =
+        if (aE == expWidth && aS == sigWidth)
+            s"MxMulAddRecFN_e${expWidth}_s${sigWidth}"
+        else
+            s"MxMulAddRecFN_e${expWidth}_s${sigWidth}_ae${aE}_as${aS}"
+
     val io = IO(new Bundle {
-        val a = Input(new RawFloat(expWidth, sigWidth))
+        val a = Input(new RawFloat(aE, aS))
         val c = Input(Bits((expWidth + sigWidth + 1).W))
-        val mulAddA = Output(UInt(sigWidth.W))
-        val mulAddC = Output(UInt((sigWidth * 2).W))
-        val toPostMul = Output(new MulAddRecFN_interIo(expWidth, sigWidth))
+        val roundingMode   = Input(UInt(3.W))
+        val detectTininess = Input(UInt(1.W))
+        val out = Output(Bits((expWidth + sigWidth + 1).W))
+        val exceptionFlags = Output(Bits(5.W))
     })
 
-    //------------------------------------------------------------------------
-    //------------------------------------------------------------------------
-//*** POSSIBLE TO REDUCE THIS BY 1 OR 2 BITS?  (CURRENTLY 2 BITS BETWEEN
-//***  UNSHIFTED C AND PRODUCT):
-    val sigSumWidth = sigWidth * 3 + 3
-
-    //------------------------------------------------------------------------
-    //------------------------------------------------------------------------
-    val rawA = io.a
     val rawC = rawFloatFromRecFN(expWidth, sigWidth, io.c)
 
-    val signProd = rawA.sign
-//*** REVIEW THE BIAS FOR 'sExpAlignedProd':
-    val sExpAlignedProd =
-        rawA.sExp +& (BigInt(1)<<expWidth).S + (-(BigInt(1)<<expWidth) + sigWidth + 3).S
+    // Inline specialization of MulAddRecFNToRaw_preMul with b=1.0 pinned and
+    // rawA wired directly (no recFN roundtrip). sExpAlignedProd absorbs the
+    // rawA→acc bias shift into the usual +sigWidth+3 offset.
+    val sigSumWidth = sigWidth * 3 + 3
 
-    val doSubMags = signProd ^ rawC.sign
+    val sExpAlignedProdConst =
+        ((BigInt(1) << expWidth) - (BigInt(1) << aE) + sigWidth + 3).S((expWidth + 3).W)
+    val sExpAlignedProd = io.a.sExp +& sExpAlignedProdConst
 
-    //------------------------------------------------------------------------
-    //------------------------------------------------------------------------
-    val sNatCAlignDist = sExpAlignedProd - rawC.sExp
+    val signProd  = io.a.sign
+    val doSubMags = io.a.sign ^ rawC.sign
+
+    val sNatCAlignDist   = sExpAlignedProd - rawC.sExp
     val posNatCAlignDist = sNatCAlignDist(expWidth + 1, 0)
-    val isMinCAlign = rawA.isZero || (sNatCAlignDist < 0.S)
-    val CIsDominant =
-        ! rawC.isZero && (isMinCAlign || (posNatCAlignDist <= sigWidth.U))
+    val isMinCAlign      = io.a.isZero || (sNatCAlignDist < 0.S)
+    val CIsDominant      = ! rawC.isZero && (isMinCAlign || (posNatCAlignDist <= sigWidth.U))
     val CAlignDist =
         Mux(isMinCAlign,
             0.U,
@@ -51,86 +72,63 @@ class MxMulAddRecFNToRaw_preMul(expWidth: Int, sigWidth: Int) extends RawModule
             )
         )
     val mainAlignedSigC =
-        (Mux(doSubMags, ~rawC.sig, rawC.sig) ## Fill(sigSumWidth - sigWidth + 2, doSubMags)).asSInt>>CAlignDist
+        (Mux(doSubMags, ~rawC.sig, rawC.sig) ##
+            Fill(sigSumWidth - sigWidth + 2, doSubMags)).asSInt >> CAlignDist
     val reduced4CExtra =
-        (orReduceBy4(rawC.sig<<((sigSumWidth - sigWidth - 1) & 3)) &
+        (orReduceBy4(rawC.sig << ((sigSumWidth - sigWidth - 1) & 3)) &
              lowMask(
-                 CAlignDist>>2,
-//*** NOT NEEDED?:
-//                 (sigSumWidth + 2)>>2,
-                 (sigSumWidth - 1)>>2,
-                 (sigSumWidth - sigWidth - 1)>>2
+                 CAlignDist >> 2,
+                 (sigSumWidth - 1) >> 2,
+                 (sigSumWidth - sigWidth - 1) >> 2
              )
         ).orR
     val alignedSigC =
-        Cat(mainAlignedSigC>>3,
+        Cat(mainAlignedSigC >> 3,
             Mux(doSubMags,
                 mainAlignedSigC(2, 0).andR && ! reduced4CExtra,
                 mainAlignedSigC(2, 0).orR  ||   reduced4CExtra
             )
         )
 
-    //------------------------------------------------------------------------
-    //------------------------------------------------------------------------
-    io.mulAddA := rawA.sig
-    io.mulAddC := alignedSigC(sigWidth * 2, 1)
+    // mulAddA: pad rawA.sig's (aS+1)-bit field to sigWidth bits, with the
+    // leading '1' at position sigWidth-1 (matching stock preMul's convention).
+    val mulAddA: UInt =
+        if (sigWidth == aS) io.a.sig(aS - 1, 0)
+        else io.a.sig(aS - 1, 0) ## 0.U((sigWidth - aS).W)
+    val mulAddB: UInt = (BigInt(1) << (sigWidth - 1)).U(sigWidth.W)
+    val mulAddC: UInt = alignedSigC(sigWidth * 2, 1)
 
-    io.toPostMul.isSigNaNAny := isSigNaNRawFloat(rawA) || isSigNaNRawFloat(rawC)
-    io.toPostMul.isNaNAOrB := rawA.isNaN
-    io.toPostMul.isInfA    := rawA.isInf
-    io.toPostMul.isZeroA   := rawA.isZero
-    io.toPostMul.isInfB    := false.B
-    io.toPostMul.isZeroB   := false.B
-    io.toPostMul.signProd  := signProd
-    io.toPostMul.isNaNC    := rawC.isNaN
-    io.toPostMul.isInfC    := rawC.isInf
-    io.toPostMul.isZeroC   := rawC.isZero
-    io.toPostMul.sExpSum   :=
+    // CIRCT folds this into `mulAddA << (sigWidth-1)` — no multiplier.
+    val mulAddResult = (mulAddA * mulAddB) +& mulAddC
+
+    val postMul = Module(new MulAddRecFNToRaw_postMul(expWidth, sigWidth))
+    postMul.io.fromPreMul.isSigNaNAny :=
+        isSigNaNRawFloat(io.a) || isSigNaNRawFloat(rawC)
+    postMul.io.fromPreMul.isNaNAOrB       := io.a.isNaN
+    postMul.io.fromPreMul.isInfA          := io.a.isInf
+    postMul.io.fromPreMul.isZeroA         := io.a.isZero
+    postMul.io.fromPreMul.isInfB          := false.B
+    postMul.io.fromPreMul.isZeroB         := false.B
+    postMul.io.fromPreMul.signProd        := signProd
+    postMul.io.fromPreMul.isNaNC          := rawC.isNaN
+    postMul.io.fromPreMul.isInfC          := rawC.isInf
+    postMul.io.fromPreMul.isZeroC         := rawC.isZero
+    postMul.io.fromPreMul.sExpSum         :=
         Mux(CIsDominant, rawC.sExp, sExpAlignedProd - sigWidth.S)
-    io.toPostMul.doSubMags := doSubMags
-    io.toPostMul.CIsDominant := CIsDominant
-    io.toPostMul.CDom_CAlignDist := CAlignDist(log2Ceil(sigWidth + 1) - 1, 0)
-    io.toPostMul.highAlignedSigC :=
-        alignedSigC(sigSumWidth - 1, sigWidth * 2 + 1)
-    io.toPostMul.bit0AlignedSigC := alignedSigC(0)
-}
+    postMul.io.fromPreMul.doSubMags       := doSubMags
+    postMul.io.fromPreMul.CIsDominant     := CIsDominant
+    postMul.io.fromPreMul.CDom_CAlignDist := CAlignDist(log2Ceil(sigWidth + 1) - 1, 0)
+    postMul.io.fromPreMul.highAlignedSigC := alignedSigC(sigSumWidth - 1, sigWidth * 2 + 1)
+    postMul.io.fromPreMul.bit0AlignedSigC := alignedSigC(0)
 
-class MxMulAddRecFN(expWidth: Int, sigWidth: Int) extends RawModule
-{
-    override def desiredName = s"MxMulAddRecFN_e${expWidth}_s${sigWidth}"
-    val io = IO(new Bundle {
-        val a = Input(new RawFloat(expWidth, sigWidth))
-        val c = Input(Bits((expWidth + sigWidth + 1).W))
-        val roundingMode   = Input(UInt(3.W))
-        val detectTininess = Input(UInt(1.W))
-        val out = Output(Bits((expWidth + sigWidth + 1).W))
-        val exceptionFlags = Output(Bits(5.W))
-    })
+    postMul.io.mulAddResult := mulAddResult
+    postMul.io.roundingMode := io.roundingMode
 
-    //------------------------------------------------------------------------
-    //------------------------------------------------------------------------
-    val mulAddRecFNToRaw_preMul =
-        Module(new MxMulAddRecFNToRaw_preMul(expWidth, sigWidth))
-    val mulAddRecFNToRaw_postMul =
-        Module(new MulAddRecFNToRaw_postMul(expWidth, sigWidth))
-	
-    mulAddRecFNToRaw_preMul.io.a  := io.a
-    mulAddRecFNToRaw_preMul.io.c  := io.c
-
-	val mulAddResult =  (mulAddRecFNToRaw_preMul.io.mulAddA << (sigWidth -1)) +& mulAddRecFNToRaw_preMul.io.mulAddC
-
-    mulAddRecFNToRaw_postMul.io.fromPreMul := mulAddRecFNToRaw_preMul.io.toPostMul
-    mulAddRecFNToRaw_postMul.io.mulAddResult := mulAddResult
-    mulAddRecFNToRaw_postMul.io.roundingMode := io.roundingMode
-
-    //------------------------------------------------------------------------
-    //------------------------------------------------------------------------
-    val roundRawFNToRecFN =
-        Module(new RoundRawFNToRecFN(expWidth, sigWidth, 0))
-    roundRawFNToRecFN.io.invalidExc   := mulAddRecFNToRaw_postMul.io.invalidExc
-    roundRawFNToRecFN.io.infiniteExc  := false.B
-    roundRawFNToRecFN.io.in           := mulAddRecFNToRaw_postMul.io.rawOut
-    roundRawFNToRecFN.io.roundingMode := io.roundingMode
+    val roundRawFNToRecFN = Module(new RoundRawFNToRecFN(expWidth, sigWidth, 0))
+    roundRawFNToRecFN.io.invalidExc     := postMul.io.invalidExc
+    roundRawFNToRecFN.io.infiniteExc    := false.B
+    roundRawFNToRecFN.io.in             := postMul.io.rawOut
+    roundRawFNToRecFN.io.roundingMode   := io.roundingMode
     roundRawFNToRecFN.io.detectTininess := io.detectTininess
     io.out            := roundRawFNToRecFN.io.out
     io.exceptionFlags := roundRawFNToRecFN.io.exceptionFlags

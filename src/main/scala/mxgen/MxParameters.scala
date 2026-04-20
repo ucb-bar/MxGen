@@ -301,6 +301,7 @@ object MxConfig {
   def mxGemmini = MxConfig(
     actFormats = Set(MxFormat.FP4, MxFormat.FP6_E3M2, MxFormat.FP8_E4M3),
     weiFormats = Set(MxFormat.FP4, MxFormat.FP6_E3M2, MxFormat.FP8_E4M3),
+    productFormat = MxFormat.Custom(4, 4),
     modesOverride = Some(List(MxPEParams.mode0, MxPEParams.mode4, MxPEParams.mode8)),
   )
 }
