@@ -71,18 +71,3 @@ Tests are listed in `test/tests.yml`. To add a new test, append an entry:
 - spec: mxgen.YourNewTest_Spec
   label: Your Test Label
 ```
-
-## Project Structure
-
-```
-src/main/scala/mxgen/
-  MxParameters.scala   # MxFormat, MxPEParams, MxConfig definitions
-  MxFPMul.scala        # Top-level fused multiply unit
-  MxPE.scala           # Processing element (2x2 MACU grid)
-  MxExp.scala          # Exponent adder (4 lanes)
-  MACU.scala           # Multiply-accumulate compute unit
-  Multiplier2x2.scala  # Base 2x2 unsigned multiplier
-  Classifier.scala     # Format classification and mode selection
-test/src/mxgen/
-  *.scala              # tests
-```
