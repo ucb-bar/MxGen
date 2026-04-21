@@ -28,12 +28,21 @@ import mxgen._
 //   lane 1-3: only modes 0,4 (numOutputs=4) → widest FP6_E3M2 → FP6-sized Mul
 //   => 1 FP8 multiplier + 3 FP6 multipliers. Narrower formats widen up.
 //
-// Lane routing (output lane i, per the supporting mode):
-//   numOutputs=4 (outer product): a[i>>1] × w[i&1]
-//   numOutputs=2, actInputs=2, weiInputs=1: a[i] × w[0]
-//   numOutputs=2, actInputs=1, weiInputs=2: a[0] × w[i]
-//   numOutputs=2, actInputs=2, weiInputs=2: a[i] × w[i]
-//   numOutputs=1: a[0] × w[0]
+// Lane routing (output lane i, per the supporting mode).
+// These mirror MxFpMul exactly — numOutputs=2 modes broadcast across lane
+// pairs (0,1)/(2,3), so all four output lanes hold valid data whenever any
+// supporting mode has numOutputs >= 2.
+//   numOutputs=4 (outer product): a[i>>1]  × w[i&1]
+//   numOutputs=2, actInputs=2:    a[i>>1]  × w[0]
+//   numOutputs=2, weiInputs=2:    a[0]     × w[i>>1]
+//   numOutputs=1:                 lane 0 = a[0] × w[0]; lanes 1-3 are
+//                                 don't-care (we replicate lane 0).
+//
+// Input invariant (enforced by MxPEParams ↔ format mapping):
+//   actInputs == 2 iff the activation format is dual-element (sigWidth < 4)
+//   weiInputs == 2 iff the weight     format is dual-element (sigWidth < 4)
+// So element index 1 is only ever requested on a dual format, which always
+// has a valid high half on the input bus.
 // -----------------------------------------------------------------------------
 
 class MxHardfloatFMA(val config: MxConfig, val uniformBF16: Boolean = true) extends Module {
@@ -104,7 +113,10 @@ class MxHardfloatFMA(val config: MxConfig, val uniformBF16: Boolean = true) exte
   val laneProductFormats: Seq[MxFormat] = (0 until numLanes).map { i =>
     if (uniformBF16) MxFormat(8, 8)
     else {
-      val fs = supportedPairs.filter { case (_, _, m) => m.numOutputs > i }
+      // Lane i needs to cover every format from any mode that contributes a
+      // checked output on it — numOutputs>=2 always, numOutputs=1 only on
+      // lane 0 (other lanes under a numOutputs=1 mode are don't-care).
+      val fs = supportedPairs.filter { case (_, _, m) => m.numOutputs >= 2 || i == 0 }
                              .flatMap  { case (a, w, _) => Seq(a, w) }
       if (fs.isEmpty) accFmt
       else MxFormat(
@@ -116,17 +128,28 @@ class MxHardfloatFMA(val config: MxConfig, val uniformBF16: Boolean = true) exte
   println(s"  lane product formats: ${laneProductFormats.map(_.toString).mkString("[", ", ", "]")}")
 
   // ---------------------------------------------------------------------------
-  // Lane extraction + per-format → recFN(target) conversion. Target is the
-  // caller-supplied product format for the FMA stage.
+  // Lane extraction + per-format → recFN(target) conversion.
+  //
+  // Packing convention (matches MxFpMul):
+  //   The bus is split into two equal halves of inBusWidth/2 bits each. For
+  //   dual-element formats, element 0 sits in the low half, element 1 in the
+  //   high half — each zero-extended to the half-width. For single-element
+  //   formats, the value occupies the low bitWidth bits of the bus.
+  //
+  //   So idx=0 extracts bits [bitWidth-1:0] and idx=1 extracts bits
+  //   [half + bitWidth - 1 : half]. idx=1 is only requested on dual formats
+  //   (see the actInputs/weiInputs invariant in the header).
   // ---------------------------------------------------------------------------
-  def extractActLane(f: MxFormat, i: Int): UInt = {
-    val w = f.bitWidth
-    io.in_activation(w*(i+1) - 1, w*i)
+  private def extractHalves(bus: UInt, totalW: Int, f: MxFormat, i: Int): UInt = {
+    val half = totalW / 2
+    val w    = f.bitWidth
+    if (i == 0) bus(w - 1, 0)
+    else        bus(half + w - 1, half)
   }
-  def extractWeiLane(f: MxFormat, i: Int): UInt = {
-    val w = f.bitWidth
-    io.in_weights(w*(i+1) - 1, w*i)
-  }
+  def extractActLane(f: MxFormat, i: Int): UInt =
+    extractHalves(io.in_activation, config.inActBusWidth, f, i)
+  def extractWeiLane(f: MxFormat, i: Int): UInt =
+    extractHalves(io.in_weights,    config.inWeiBusWidth, f, i)
 
   def recForLane(i: Int, isAct: Boolean, tE: Int, tS: Int): UInt = {
     val fmts      = if (isAct) config.actFormats else config.weiFormats
@@ -174,25 +197,32 @@ class MxHardfloatFMA(val config: MxConfig, val uniformBF16: Boolean = true) exte
   // Input-lane index (0 or 1) on the activation / weight bus for a given
   // output lane i, per the currently active mode. When all supporting modes
   // yield the same index, it collapses to a constant.
-  def aInputIdxLit(i: Int, m: MxPEParams): Int = m.numOutputs match {
-    case 4 => i >> 1
-    case 2 if m.actInputs == 2 => i
-    case 2                     => 0
-    case 1 => 0
-    case _ => 0
+  //
+  // Scheme:
+  //   numOutputs=4, actInputs=2: act_idx = i >> 1 (outer product row)
+  //   numOutputs=4, weiInputs=2: wei_idx = i & 1  (outer product column)
+  //   numOutputs=2, actInputs=2: act_idx = i >> 1 (broadcast across pairs)
+  //   numOutputs=2, weiInputs=2: wei_idx = i >> 1 (broadcast across pairs)
+  //   actInputs=1 / weiInputs=1 / numOutputs=1: idx = 0
+  def aInputIdxLit(i: Int, m: MxPEParams): Int =
+    if (m.actInputs == 2 && m.numOutputs > 1) i >> 1 else 0
+  def wInputIdxLit(i: Int, m: MxPEParams): Int = (m.weiInputs, m.numOutputs) match {
+    case (2, 4) => i & 1
+    case (2, 2) => i >> 1
+    case _      => 0
   }
-  def wInputIdxLit(i: Int, m: MxPEParams): Int = m.numOutputs match {
-    case 4 => i & 1
-    case 2 if m.weiInputs == 2 => i
-    case 2                     => 0
-    case 1 => 0
-    case _ => 0
-  }
+
+  // Which supported modes produce a checked output on lane i. Under the
+  // broadcast routing above, modes with numOutputs >= 2 contribute to every
+  // lane; numOutputs=1 modes contribute only to lane 0 (other lanes can
+  // replicate lane 0's result or read don't-care).
+  private def modesFor(i: Int): List[MxPEParams] =
+    config.modesSupported.filter(m => m.numOutputs >= 2 || i == 0)
 
   // Compute the recoded a / w for output lane i, muxing over the input lane
   // indices (0 and 1) when supporting modes disagree.
   def selectRecOperand(i: Int, isAct: Boolean, tE: Int, tS: Int): UInt = {
-    val supporting = config.modesSupported.filter(_.numOutputs > i)
+    val supporting = modesFor(i)
     val idxs       = supporting.map(m => if (isAct) aInputIdxLit(i, m) else wInputIdxLit(i, m)).distinct
     idxs match {
       case Seq(only) => recForLane(only, isAct, tE, tS)
