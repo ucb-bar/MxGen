@@ -327,142 +327,139 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
   out_e := expAdder.io.out_exp
 
   // ---------------------------------------------------------------------------
-  // Normalize paths — only generated for numOutputs values actually present.
-  // Each path converts integer PE products back to floating-point (RawFloat).
+  // PE product → MxPEAddRecFN path.
+  //
+  // The PE emits an unsigned integer product per lane. Previously MxFpMul ran
+  // a `normalize` CLZ on it and then `MxPEOutToRaw` did a second CLZ for the
+  // subnormal case, just to reconstruct a RawFloat that was immediately
+  // unpacked by MxMulAddRecFN. Both CLZes are redundant — the hardfloat
+  // postMul already has a CLZ over a 2*sigWidth+3-bit absSigSum that's wide
+  // enough to absorb an unnormalized product.
+  //
+  // Here we slice the raw peMag from out_pe per output mode, MSB-align it to
+  // sigWidth bits, and feed (peMag, peExp, peSign, peIsZero, peIsNaN, rec_c)
+  // straight into MxPEAddRecFN.
   // ---------------------------------------------------------------------------
-  // For the 4-output path, the PE lane width determines which normalizer sizes
-  // are valid. Only generate normalizers that fit within the lane.
-  val out4LaneWidth = config.outPE_width / 4
-  // Only generate a normalizer size if a 4-output mode actually produces that
-  // product width. Previously we gated on per-format support union, which
-  // over-instantiated when the configured mode set never pairs those widths
-  // (e.g. mxgemmini = {mode0, mode4, mode8} has no 2×3 / 3×2 products).
-  val out4SigPairs: Set[(Int, Int)] =
-    config.modesSupported.filter(_.numOutputs == 4).map(m => (m.actWidth, m.weiWidth)).toSet
-  val need4Norm6 = config.needsOut4 && out4LaneWidth >= 6 &&
-    out4SigPairs.contains((3, 3))  // 3×3 products
-  val need4Norm5 = config.needsOut4 && out4LaneWidth >= 5 &&
-    (out4SigPairs.contains((2, 3)) || out4SigPairs.contains((3, 2)))  // mixed 2×3/3×2
+  val productFmt  = config.productFormat
+  val outSig      = productFmt.sig
+  val outExp      = productFmt.exp
+  val outBias     = productFmt.bias
+  val laneExpWidth = outExp + 1
 
-  val out4_toRec: Option[Vec[RawFloat]] = if (config.needsOut4) Some(VecInit.tabulate(4) { i =>
-    val n1 = if (need4Norm6) Some(normalize(out_pe(i*(config.outPE_width/4) + 5, i*config.outPE_width/4), outType4.sig - 1, 6)) else None
-    val n2 = if (need4Norm5) Some(normalize(out_pe(i*(config.outPE_width/4) + 4, i*config.outPE_width/4), outType4.sig - 1, 5)) else None
-    val n3 = normalize(out_pe(i*(config.outPE_width/4) + 3, i*config.outPE_width/4), outType4.sig - 1, 4)
-
-    // Select normalizer result based on which sizes are available
-    val (out4_rec_exp, shift_dir, out4_rec_sig) = (n1, n2) match {
-      case (Some(v1), Some(v2)) =>
-        (Mux(actType.sig === 2.U && weiType.sig === 2.U, n3._2, Mux(actType.sig === 3.U && weiType.sig === 3.U, v1._2, v2._2)),
-         Mux(actType.sig === 2.U && weiType.sig === 2.U, n3._3, Mux(actType.sig === 3.U && weiType.sig === 3.U, v1._3, v2._3)),
-         Mux(actType.sig === 2.U && weiType.sig === 2.U, n3._1, Mux(actType.sig === 3.U && weiType.sig === 3.U, v1._1, v2._1)))
-      case (Some(v1), None) =>
-        (Mux(actType.sig === 3.U && weiType.sig === 3.U, v1._2, n3._2),
-         Mux(actType.sig === 3.U && weiType.sig === 3.U, v1._3, n3._3),
-         Mux(actType.sig === 3.U && weiType.sig === 3.U, v1._1, n3._1))
-      case (None, Some(v2)) =>
-        (Mux(actType.sig === 2.U && weiType.sig === 2.U, n3._2, v2._2),
-         Mux(actType.sig === 2.U && weiType.sig === 2.U, n3._3, v2._3),
-         Mux(actType.sig === 2.U && weiType.sig === 2.U, n3._1, v2._1))
-      case (None, None) =>
-        (n3._2, n3._3, n3._1)
+  // Select peMag width options for an output-mode based on which (actSig,
+  // weiSig) pairs the configured modes actually produce. Builds an
+  // MSB-aligned sigWidth-bit peMag from the raw out_pe slice. The runtime
+  // mux on actType.sig/weiType.sig picks the right width.
+  def peMagOut4(laneIdx: Int): UInt = {
+    val laneW = config.outPE_width / 4
+    val base  = laneIdx * laneW
+    val pairs = config.modesSupported.filter(_.numOutputs == 4)
+                      .map(m => (m.actWidth, m.weiWidth)).toSet
+    val need6 = laneW >= 6 && pairs.contains((3, 3))
+    val need5 = laneW >= 5 && (pairs.contains((2, 3)) || pairs.contains((3, 2)))
+    val s4    = Cat(out_pe(base + 3, base), 0.U((cType.sig - 4).W))
+    val m6    = if (need6) Some(Cat(out_pe(base + 5, base), 0.U((cType.sig - 6).W))) else None
+    val m5    = if (need5) Some(Cat(out_pe(base + 4, base), 0.U((cType.sig - 5).W))) else None
+    (m6, m5) match {
+      case (Some(v6), Some(v5)) =>
+        Mux(actType.sig === 2.U && weiType.sig === 2.U, s4,
+          Mux(actType.sig === 3.U && weiType.sig === 3.U, v6, v5))
+      case (Some(v6), None) =>
+        Mux(actType.sig === 3.U && weiType.sig === 3.U, v6, s4)
+      case (None, Some(v5)) =>
+        Mux(actType.sig === 2.U && weiType.sig === 2.U, s4, v5)
+      case (None, None) => s4
     }
+  }
 
-    MxPEOutToRaw(
-      expWidth = outType4.exp,
-      sigWidth = outType4.sig,
-      sign = out_signs(i),
-      exp = Mux(!shift_dir, out_e((i+1)*(totalAdderWidth/4)-1, i*(totalAdderWidth/4)) -% out4_rec_exp, out_e((i+1)*(totalAdderWidth/4)-1, i*(totalAdderWidth/4)) +% out4_rec_exp),
-      sig = out4_rec_sig,
-      inputNaN  = nanA || nanW,
-      inputZero = in_a_mask(i / 2) || in_w_mask(i % 2)
-    )
-  }) else None
-
-  val out2HalfWidth = config.outPE_width / 2
-  val need2Norm7 = config.needsOut2 && out2HalfWidth >= 7
-
-  val out2_toRec: Option[Vec[RawFloat]] = if (config.needsOut2) Some(VecInit.tabulate(2) { i =>
-    val n1 = if (need2Norm7) Some(normalize(out_pe(i*(config.outPE_width/2) + 6, i*config.outPE_width/2), outType2.sig - 1, 7)) else None
-    val n2 = normalize(out_pe(i*(config.outPE_width/2) + 5, i*config.outPE_width/2), outType2.sig - 1, 6)
-
-    val (out2_toRec_exp, shift_dir, out2_toRec_sig) = n1 match {
-      case Some(v1) =>
-        (Mux(actType.sig === 2.U || weiType.sig === 2.U, n2._2, v1._2),
-         Mux(actType.sig === 2.U || weiType.sig === 2.U, n2._3, v1._3),
-         Mux(actType.sig === 2.U || weiType.sig === 2.U, n2._1, v1._1))
-      case None =>
-        (n2._2, n2._3, n2._1)
+  def peMagOut2(laneIdx: Int): UInt = {
+    val halfW = config.outPE_width / 2
+    val base  = laneIdx * halfW
+    val need7 = halfW >= 7
+    val s6    = Cat(out_pe(base + 5, base), 0.U((cType.sig - 6).W))
+    val m7    = if (need7) Some(Cat(out_pe(base + 6, base), 0.U((cType.sig - 7).W))) else None
+    m7 match {
+      case Some(v7) =>
+        Mux(actType.sig === 2.U || weiType.sig === 2.U, s6, v7)
+      case None => s6
     }
+  }
 
-    MxPEOutToRaw(
-      expWidth = outType2.exp,
-      sigWidth = outType2.sig,
-      sign = out_signs(i*2),
-      exp = Mux(!shift_dir, out_e(i*(totalAdderWidth/2) + outType2.exp, i*(totalAdderWidth/2)) -% out2_toRec_exp, out_e(i*(totalAdderWidth/2) + outType2.exp, i*(totalAdderWidth/2)) +% out2_toRec_exp),
-      sig = out2_toRec_sig,
-      inputNaN  = nanA || nanW,
-      inputZero = in_a_mask(i) || in_w_mask(i % 2)
-    )
-  }) else None
+  def peMagOut1: UInt = out_pe(outSig - 1, 0)
 
-  val out1_toRec: Option[Vec[RawFloat]] = if (config.needsOut1) Some(VecInit.tabulate(1) { i =>
-    val out1_toRec_norm = normalize(out_pe(7,0), outType1.sig - 1, 8)
-
-    MxPEOutToRaw(
-      expWidth = outType1.exp,
-      sigWidth = outType1.sig,
-      sign = out_signs(0),
-      exp = Mux(!out1_toRec_norm._3, out_e((i)*(totalAdderWidth) + outType1.exp, i*(totalAdderWidth)) -% out1_toRec_norm._2, out_e((i)*(totalAdderWidth) + outType1.exp, i*(totalAdderWidth)) +% out1_toRec_norm._2),
-      sig = out1_toRec_norm._1,
-      inputNaN  = nanA || nanW,
-      inputZero = in_a_mask(0) || in_w_mask(0)
-    )
-  }) else None
-
-  // ---------------------------------------------------------------------------
-  // Add units — only `numActiveOutputLanes` instantiated.
-  // MxMulAddRecFN is the add side of a fused FMA (no actual multiplier). It
-  // accepts rawA directly at productFormat widths and widens inline, so the
-  // product→adder path is pure wiring plus a constant exp-bias shift and a
-  // fraction zero-pad. No per-lane RoundAnyRawFNToRecFN is needed.
-  // ---------------------------------------------------------------------------
-  val productFmt = config.productFormat
   val addUnits = Seq.fill(config.numActiveOutputLanes)(
-    Module(new hardfloatHelper.MxMulAddRecFN(cType.exp, cType.sig, productFmt.exp, productFmt.sig)))
+    Module(new hardfloatHelper.MxPEAddRecFN(cType.exp, cType.sig, laneExpWidth, outBias)))
   val outputs = Wire(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
 
-  // outType1/2/4 are all `config.productFormat`, so the RawFloats coming out
-  // of every out*_toRec path share a format and can be muxed directly.
+  val peIsNaN = nanA || nanW
+  val recIn_c = io.rec_c.asTypeOf(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
+
   for (i <- 0 until config.numActiveOutputLanes) {
-    val rawAtProduct: RawFloat = config.fixedNumOutputs match {
-      case Some(4) => out4_toRec.get(i)
-      case Some(2) => out2_toRec.get(i)
-      case Some(1) => out1_toRec.get(0)
+    // Per-output-mode peMag and peExp slices. Lane indexing mirrors the
+    // previous out4_toRec(i) / out2_toRec(i/2) / out1_toRec(0) scheme.
+    val peMag4 = if (config.needsOut4) Some(peMagOut4(i))         else None
+    val peMag2 = if (config.needsOut2) Some(peMagOut2(i / 2))     else None
+    val peMag1 = if (config.needsOut1) Some(peMagOut1)            else None
+    val peExp4 = if (config.needsOut4) Some(out_e((i + 1) * (totalAdderWidth / 4) - 1, i * (totalAdderWidth / 4))) else None
+    val peExp2 = if (config.needsOut2) Some(out_e((i / 2) * (totalAdderWidth / 2) + outExp, (i / 2) * (totalAdderWidth / 2))) else None
+    val peExp1 = if (config.needsOut1) Some(out_e(outExp, 0))     else None
+    val peSign4 = out_signs(i)
+    val peSign2 = out_signs((i / 2) * 2)
+    val peSign1 = out_signs(0)
+    val peZero4 = in_a_mask(i / 2) || in_w_mask(i % 2)
+    val peZero2 = in_a_mask(i / 2) || in_w_mask((i / 2) % 2)
+    val peZero1 = in_a_mask(0) || in_w_mask(0)
+
+    val (peMag, peExp, peSign, peZero): (UInt, UInt, Bool, Bool) = config.fixedNumOutputs match {
+      case Some(4) => (peMag4.get, peExp4.get, peSign4, peZero4)
+      case Some(2) => (peMag2.get, peExp2.get, peSign2, peZero2)
+      case Some(1) => (peMag1.get, peExp1.get, peSign1, peZero1)
       case Some(n) => throw new IllegalArgumentException(s"Unsupported fixedNumOutputs=$n")
       case None =>
-        // Multiple numOutputs values — build mux with only available branches.
-        // Use original indexing: out4 lane=i, out2 lane=i/2, out1 lane=0.
-        if (config.needsOut4 && config.needsOut2 && config.needsOut1) {
-          Mux(modeWire.numOutputs === 4.U, out4_toRec.get(i),
-            Mux(modeWire.numOutputs === 2.U, out2_toRec.get(i/2),
-              out1_toRec.get(0)))
-        } else if (config.needsOut4 && config.needsOut2) {
-          Mux(modeWire.numOutputs === 4.U, out4_toRec.get(i),
-            out2_toRec.get(i/2))
-        } else if (config.needsOut4 && config.needsOut1) {
-          Mux(modeWire.numOutputs === 4.U, out4_toRec.get(i),
-            out1_toRec.get(0))
-        } else { // needsOut2 && needsOut1
-          Mux(modeWire.numOutputs === 2.U, out2_toRec.get(i/2),
-            out1_toRec.get(0))
+        val needs4  = config.needsOut4
+        val needs2  = config.needsOut2
+        val needs1  = config.needsOut1
+        val is4     = modeWire.numOutputs === 4.U
+        val is2     = modeWire.numOutputs === 2.U
+        val magSel: UInt = (needs4, needs2, needs1) match {
+          case (true, true, true)  => Mux(is4, peMag4.get, Mux(is2, peMag2.get, peMag1.get))
+          case (true, true, false) => Mux(is4, peMag4.get, peMag2.get)
+          case (true, false, true) => Mux(is4, peMag4.get, peMag1.get)
+          case (false, true, true) => Mux(is2, peMag2.get, peMag1.get)
+          case _ => throw new IllegalArgumentException("Unreachable: fixedNumOutputs==None requires multiple needs*")
         }
+        val expSel: UInt = (needs4, needs2, needs1) match {
+          case (true, true, true)  => Mux(is4, peExp4.get, Mux(is2, peExp2.get, peExp1.get))
+          case (true, true, false) => Mux(is4, peExp4.get, peExp2.get)
+          case (true, false, true) => Mux(is4, peExp4.get, peExp1.get)
+          case (false, true, true) => Mux(is2, peExp2.get, peExp1.get)
+          case _ => throw new IllegalArgumentException("Unreachable")
+        }
+        val signSel: Bool = (needs4, needs2, needs1) match {
+          case (true, true, true)  => Mux(is4, peSign4, Mux(is2, peSign2, peSign1))
+          case (true, true, false) => Mux(is4, peSign4, peSign2)
+          case (true, false, true) => Mux(is4, peSign4, peSign1)
+          case (false, true, true) => Mux(is2, peSign2, peSign1)
+          case _ => throw new IllegalArgumentException("Unreachable")
+        }
+        val zeroSel: Bool = (needs4, needs2, needs1) match {
+          case (true, true, true)  => Mux(is4, peZero4, Mux(is2, peZero2, peZero1))
+          case (true, true, false) => Mux(is4, peZero4, peZero2)
+          case (true, false, true) => Mux(is4, peZero4, peZero1)
+          case (false, true, true) => Mux(is2, peZero2, peZero1)
+          case _ => throw new IllegalArgumentException("Unreachable")
+        }
+        (magSel, expSel, signSel, zeroSel)
     }
-    val recIn_c = io.rec_c.asTypeOf(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))(i)
 
-    addUnits(i).io.roundingMode := hardfloat.consts.round_near_even
+    addUnits(i).io.roundingMode   := hardfloat.consts.round_near_even
     addUnits(i).io.detectTininess := hardfloat.consts.tininess_afterRounding
-    addUnits(i).io.a := rawAtProduct
-    addUnits(i).io.c := recIn_c
+    addUnits(i).io.peMag    := peMag
+    addUnits(i).io.peExp    := peExp
+    addUnits(i).io.peSign   := peSign
+    addUnits(i).io.peIsZero := peZero
+    addUnits(i).io.peIsNaN  := peIsNaN
+    addUnits(i).io.c        := recIn_c(i)
 
     outputs(i) := addUnits(i).io.out
   }
