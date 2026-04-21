@@ -92,6 +92,69 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
     }
   }
 
+  // Shared classify+pack for one operand element. Replaces the per-format
+  // cones (one `classify` + one `pack` per format, all muxed after the fact)
+  // with a single pipeline where all per-format combinational work is done
+  // inside one helper, then Mux1H'd on the runtime-selected format. Since
+  // formats sharing a sigWidth also share raw-sig bit positions (E3M2/E5M2;
+  // E2M3/E4M3), CIRCT collapses the duplicated rawSig cones into one.
+  //
+  // Exp packing: the original pack() does
+  //     packed_exp = c.exp.asSInt               // f.expWidth-bit SInt
+  //     slot       = packed_exp.pad(slotExpWidth).asUInt
+  // i.e. SIGN-extend the biased-exp bit pattern up to the slot width, not
+  // zero-extend. MxExp re-reads the slot via `slot(w-1,0).asSInt`, so the
+  // two-s-complement sign bit matters all the way up to w=expAdderWidths(i).
+  private def classifyAndPackSlot(
+    lane:         UInt,
+    typeBundle:   MxTypeBundle,
+    formats:      Seq[MxFormat],
+    slotSigWidth: Int,
+    slotExpWidth: Int
+  ): (UInt, UInt, UInt, Bool, Bool) = {
+    require(formats.nonEmpty, "classifyAndPackSlot: formats must be non-empty")
+
+    val sels: Seq[Bool] = formats.map { f =>
+      typeBundle.exp === f.expWidth.U && typeBundle.sig === f.sigWidth.U
+    }
+
+    val perFmt = formats.map { f =>
+      val w      = f.bitWidth
+      val sign   = lane(w - 1)
+      val rawExp = lane(w - 2, f.sigWidth - 1)
+      val rawSig = if (f.sigWidth > 1) lane(f.sigWidth - 2, 0) else 0.U(1.W)
+      val nz     = if (f.sigWidth > 1) rawSig.orR else false.B
+      val isZero = (rawExp === 0.U) && !nz
+      val isSub  = (rawExp === 0.U) && nz
+      val isNaN  = if (w == 8) rawExp.andR && nz else false.B
+      // Format-native UInt modular subtractor matching classify()'s output
+      // c.exp. Width is f.expWidth; callers sign-extend to the slot width.
+      val adjExp: UInt =
+        (Mux(isSub, 1.U(f.expWidth.W), rawExp) -% f.bias.U(f.expWidth.W)) -% 1.U(1.W)
+      (sign, rawSig, isNaN, isZero, isSub, adjExp)
+    }
+
+    val muxedSign:  UInt = Mux1H(sels.zip(perFmt).map { case (sel, t) => sel -> t._1 })
+    val muxedIsNaN: Bool = Mux1H(sels.zip(perFmt).map { case (sel, t) => sel -> t._3 })
+    val muxedIsZero: Bool = Mux1H(sels.zip(perFmt).map { case (sel, t) => sel -> t._4 })
+    val muxedIsSub:  Bool = Mux1H(sels.zip(perFmt).map { case (sel, t) => sel -> t._5 })
+
+    // Sign-extend each format's adjExp to slotExpWidth (two-s-complement) and
+    // reinterpret as UInt — matches `packed_exp.pad(slotExpWidth).asUInt`.
+    val muxedAdjExp: UInt = Mux1H(sels.zip(perFmt).map {
+      case (sel, t) => sel -> t._6.asSInt.pad(slotExpWidth).asUInt
+    })
+    val expSlot: UInt = Mux(muxedIsZero, 0.U(slotExpWidth.W), muxedAdjExp)
+
+    val leading = (~muxedIsSub).asUInt
+    val sigContent: UInt = Mux1H(sels.zip(perFmt).map {
+      case (sel, t) => sel -> Cat(leading, t._2).pad(slotSigWidth)
+    })
+    val sigSlot: UInt = Mux(muxedIsZero, 0.U(slotSigWidth.W), sigContent)
+
+    (sigSlot, expSlot, muxedSign, muxedIsZero, muxedIsNaN)
+  }
+
   // Separate input into lanes
   val lanes2_a = io.in_activation.asTypeOf(Vec(2, UInt((config.inActBusWidth/2).W)))
   val lanes1_a = io.in_activation.asTypeOf(Vec(1, UInt((config.inActBusWidth).W)))
@@ -112,133 +175,127 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
 
   // ---------------------------------------------------------------------------
   // Classify input lanes.
-  // Each block is guarded at elaboration time by the per-format support flag.
-  // The `when` guards use `actType`/`weiType` which are hardwired constants
-  // for single-format configs, enabling FIRRTL to eliminate dead dispatch muxes.
+  //
+  // Formats split into two packing paths by sigWidth:
+  //   * sig < 4  -> "dual"   : two elements packed into lanes2_{a,w}.
+  //   * sig >= 4 -> "single" : one element filling lanes1_{a,w}; sign/mask
+  //                            are broadcast to both product positions.
+  //
+  // Within each path we run one `classifyAndPackSlot` per element slot and
+  // share the raw-field mux / isZero-isSub / bias subtract across all formats
+  // that use that slot. When both paths are present for a side, the two
+  // results are muxed by the top sig bit (sig === 4 picks the single path).
   // ---------------------------------------------------------------------------
-  if (config.actSupportFp4) {
-    val in_a_w2_cl = lanes2_a.map { f => classify(MxFormat.FP4, f(3, 0)) }
-    val (exps_a_w2, sigs_a_w2, signs_a_w2) = in_a_w2_cl.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i*2), config.inPE_act_totalWidth / 2, (config.inActBusWidth - config.inPE_act_totalWidth)/2) }.unzip3
-    val in_a_w2_zero = in_a_w2_cl.map(f => f.isZero)
+  val dualActFormats   = config.actFormats.filter(_.sigWidth < 4).toSeq.sortBy(_.bitWidth)
+  val singleActFormats = config.actFormats.filter(_.sigWidth >= 4).toSeq.sortBy(_.bitWidth)
+  val dualWeiFormats   = config.weiFormats.filter(_.sigWidth < 4).toSeq.sortBy(_.bitWidth)
+  val singleWeiFormats = config.weiFormats.filter(_.sigWidth >= 4).toSeq.sortBy(_.bitWidth)
 
-    when (actType.sig === 2.U) {
-      inA_pe := VecInit(sigs_a_w2).asUInt
-      inA_exp := VecInit(exps_a_w2).asUInt
-      inA_sign := VecInit.tabulate(2){ i => signs_a_w2(i) }.asUInt
-      in_a_mask := VecInit.tabulate(2){i => in_a_w2_zero(i)}.asUInt
-    }
-  }
-  if (config.actSupportFp6_1) {
-    val in_a_w3_cl_fp6 = lanes2_a.map { f => classify(MxFormat.FP6_E3M2, f(5, 0)) }
-    val (exps_a_w3_fp6_1, sigs_a_w3_fp6_1, signs_a_w3_fp6_1) = in_a_w3_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i*2), config.inPE_act_totalWidth / 2, (config.inActBusWidth - config.inPE_act_totalWidth)/2) }.unzip3
-    val in_a_w3_zero_fp6 = in_a_w3_cl_fp6.map(f => f.isZero)
+  // --- Activation classifier -------------------------------------------------
+  {
+    val slotSigDual  = config.inPE_act_totalWidth / 2
+    val slotExpDual  = (config.inActBusWidth - config.inPE_act_totalWidth) / 2
+    val slotSigSng   = config.inPE_act_totalWidth
+    val slotExpSng   = config.inActBusWidth - config.inPE_act_totalWidth
 
-    when (actType.exp === 3.U && actType.sig === 3.U) {
-      inA_pe := VecInit(sigs_a_w3_fp6_1).asUInt
-      inA_exp := VecInit(exps_a_w3_fp6_1).asUInt
-      inA_sign := VecInit.tabulate(2){ i => signs_a_w3_fp6_1(i) }.asUInt
-      in_a_mask := VecInit.tabulate(2){i => in_a_w3_zero_fp6(i)}.asUInt
-    }
-  }
-  if (config.actSupportFp8_1) {
-    val in_a_w3_cl_fp8 = lanes2_a.map { f => classify(MxFormat.FP8_E5M2, f(7, 0)) }
-    val (exps_a_w3_fp8_1, sigs_a_w3_fp8_1, signs_a_w3_fp8_1) = in_a_w3_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i*2), config.inPE_act_totalWidth / 2, (config.inActBusWidth - config.inPE_act_totalWidth)/2) }.unzip3
-    val in_a_w3_zero_fp8 = in_a_w3_cl_fp8.map(f => f.isZero)
+    val dualRes = if (dualActFormats.nonEmpty) Some(
+      (0 until 2).map { i =>
+        classifyAndPackSlot(lanes2_a(i), actType, dualActFormats, slotSigDual, slotExpDual)
+      }
+    ) else None
 
-    when (actType.exp === 5.U && actType.sig === 3.U) {
-      inA_pe := VecInit(sigs_a_w3_fp8_1).asUInt
-      inA_exp := VecInit(exps_a_w3_fp8_1).asUInt
-      inA_sign := VecInit.tabulate(2){ i => signs_a_w3_fp8_1(i) }.asUInt
-      in_a_mask := VecInit.tabulate(2){i => in_a_w3_zero_fp8(i)}.asUInt
-      nanA := in_a_w3_cl_fp8(0).isNaN || in_a_w3_cl_fp8(1).isNaN
-    }
-  }
-  if (config.actSupportFp6_0) {
-    val in_a_w4_cl_fp6 = lanes1_a.map { f => classify(MxFormat.FP6_E2M3, f(5, 0)) }
-    val (exps_a_w4_fp6_0, sigs_a_w4_fp6_0, signs_a_w4_fp6_0) = in_a_w4_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i*2), config.inPE_act_totalWidth, config.inActBusWidth - config.inPE_act_totalWidth) }.unzip3
-    val in_a_w4_zero_fp6 = in_a_w4_cl_fp6.map(f => f.isZero)
+    val sngRes = if (singleActFormats.nonEmpty) Some(
+      classifyAndPackSlot(lanes1_a(0), actType, singleActFormats, slotSigSng, slotExpSng)
+    ) else None
 
-    when (actType.exp === 2.U && actType.sig === 4.U) {
-      inA_pe := VecInit(sigs_a_w4_fp6_0).asUInt
-      inA_exp := VecInit(exps_a_w4_fp6_0).asUInt
-      inA_sign := VecInit.tabulate(2){ i => signs_a_w4_fp6_0(0) }.asUInt
-      in_a_mask := VecInit.tabulate(2){i => in_a_w4_zero_fp6(0)}.asUInt
-    }
-  }
-  if (config.actSupportFp8_0) {
-    val in_a_w4_cl_fp8 = lanes1_a.map { f => classify(MxFormat.FP8_E4M3, f(7, 0)) }
-    val (exps_a_w4_fp8_0, sigs_a_w4_fp8_0, signs_a_w4_fp8_0) = in_a_w4_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i*2), config.inPE_act_totalWidth, config.inActBusWidth - config.inPE_act_totalWidth) }.unzip3
-    val in_a_w4_zero_fp8 = in_a_w4_cl_fp8.map(f => f.isZero)
+    val dualSig  = dualRes.map(r => Cat(r(1)._1, r(0)._1))
+    val dualExp  = dualRes.map(r => Cat(r(1)._2, r(0)._2))
+    val dualSign = dualRes.map(r => Cat(r(1)._3, r(0)._3))
+    val dualMask = dualRes.map(r => Cat(r(1)._4.asUInt, r(0)._4.asUInt))
+    val dualNaN  = dualRes.map(r => r(0)._5 || r(1)._5)
 
-    when (actType.exp === 4.U && actType.sig === 4.U) {
-      inA_pe := VecInit(sigs_a_w4_fp8_0).asUInt
-      inA_exp := VecInit(exps_a_w4_fp8_0).asUInt
-      inA_sign := VecInit.tabulate(2){ i => signs_a_w4_fp8_0(0) }.asUInt
-      in_a_mask := VecInit.tabulate(2){i => in_a_w4_zero_fp8(0)}.asUInt
-      nanA := in_a_w4_cl_fp8(0).isNaN
+    val sngSig   = sngRes.map(_._1)
+    val sngExp   = sngRes.map(_._2)
+    val sngSign  = sngRes.map(r => Fill(2, r._3))
+    val sngMask  = sngRes.map(r => Fill(2, r._4.asUInt))
+    val sngNaN   = sngRes.map(_._5)
+
+    (dualRes, sngRes) match {
+      case (Some(_), None) =>
+        inA_pe    := dualSig.get
+        inA_exp   := dualExp.get
+        inA_sign  := dualSign.get
+        in_a_mask := dualMask.get
+        nanA      := dualNaN.get
+      case (None, Some(_)) =>
+        inA_pe    := sngSig.get
+        inA_exp   := sngExp.get
+        inA_sign  := sngSign.get
+        in_a_mask := sngMask.get
+        nanA      := sngNaN.get
+      case (Some(_), Some(_)) =>
+        val selSingle = actType.sig === 4.U
+        inA_pe    := Mux(selSingle, sngSig.get, dualSig.get)
+        inA_exp   := Mux(selSingle, sngExp.get, dualExp.get)
+        inA_sign  := Mux(selSingle, sngSign.get, dualSign.get)
+        in_a_mask := Mux(selSingle, sngMask.get, dualMask.get)
+        nanA      := Mux(selSingle, sngNaN.get,  dualNaN.get)
+      case (None, None) =>
+        throw new IllegalStateException("MxFpMul: actFormats is empty")
     }
   }
 
-  if (config.weiSupportFp4) {
-    val in_w_w2_cl = lanes2_w.map { f => classify(MxFormat.FP4, f(3, 0)) }
-    val (exps_w_w2, sigs_w_w2, signs_w_w2) = in_w_w2_cl.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i), config.inPE_wei_totalWidth / 2, (config.inWeiBusWidth - config.inPE_wei_totalWidth)/2) }.unzip3
-    val in_w_w2_zero = in_w_w2_cl.map(f => f.isZero)
+  // --- Weight classifier -----------------------------------------------------
+  {
+    val slotSigDual = config.inPE_wei_totalWidth / 2
+    val slotExpDual = (config.inWeiBusWidth - config.inPE_wei_totalWidth) / 2
+    val slotSigSng  = config.inPE_wei_totalWidth
+    val slotExpSng  = config.inWeiBusWidth - config.inPE_wei_totalWidth
 
-    when (weiType.sig === 2.U) {
-      inW_pe := VecInit(sigs_w_w2).asUInt
-      inW_exp := VecInit(exps_w_w2).asUInt
-      inW_sign := VecInit.tabulate(2){ i => signs_w_w2(i) }.asUInt
-      in_w_mask := VecInit.tabulate(2){i => in_w_w2_zero(i)}.asUInt
-    }
-  }
-  if (config.weiSupportFp6_1) {
-    val in_w_w3_cl_fp6 = lanes2_w.map { f => classify(MxFormat.FP6_E3M2, f(5, 0)) }
-    val (exps_w_w3_fp6_1, sigs_w_w3_fp6_1, signs_w_w3_fp6_1) = in_w_w3_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i), config.inPE_wei_totalWidth / 2, (config.inWeiBusWidth - config.inPE_wei_totalWidth)/2) }.unzip3
-    val in_w_w3_zero_fp6 = in_w_w3_cl_fp6.map(f => f.isZero)
+    val dualRes = if (dualWeiFormats.nonEmpty) Some(
+      (0 until 2).map { i =>
+        classifyAndPackSlot(lanes2_w(i), weiType, dualWeiFormats, slotSigDual, slotExpDual)
+      }
+    ) else None
 
-    when (weiType.exp === 3.U && weiType.sig === 3.U) {
-      inW_pe := VecInit(sigs_w_w3_fp6_1).asUInt
-      inW_exp := VecInit(exps_w_w3_fp6_1).asUInt
-      inW_sign := VecInit.tabulate(2){ i => signs_w_w3_fp6_1(i) }.asUInt
-      in_w_mask := VecInit.tabulate(2){i => in_w_w3_zero_fp6(i)}.asUInt
-    }
-  }
-  if (config.weiSupportFp8_1) {
-    val in_w_w3_cl_fp8 = lanes2_w.map { f => classify(MxFormat.FP8_E5M2, f(7, 0)) }
-    val (exps_w_w3_fp8_1, sigs_w_w3_fp8_1, signs_w_w3_fp8_1) = in_w_w3_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i), config.inPE_wei_totalWidth / 2, (config.inWeiBusWidth - config.inPE_wei_totalWidth)/2) }.unzip3
-    val in_w_w3_zero_fp8 = in_w_w3_cl_fp8.map(f => f.isZero)
+    val sngRes = if (singleWeiFormats.nonEmpty) Some(
+      classifyAndPackSlot(lanes1_w(0), weiType, singleWeiFormats, slotSigSng, slotExpSng)
+    ) else None
 
-    when (weiType.exp === 5.U && weiType.sig === 3.U) {
-      inW_pe := VecInit(sigs_w_w3_fp8_1).asUInt
-      inW_exp := VecInit(exps_w_w3_fp8_1).asUInt
-      inW_sign := VecInit.tabulate(2){ i => signs_w_w3_fp8_1(i) }.asUInt
-      in_w_mask := VecInit.tabulate(2){i => in_w_w3_zero_fp8(i)}.asUInt
-      nanW := in_w_w3_cl_fp8(0).isNaN || in_w_w3_cl_fp8(1).isNaN
-    }
-  }
-  if (config.weiSupportFp6_0) {
-    val in_w_w4_cl_fp6 = lanes1_w.map { f => classify(MxFormat.FP6_E2M3, f(5, 0)) }
-    val (exps_w_w4_fp6_0, sigs_w_w4_fp6_0, signs_w_w4_fp6_0) = in_w_w4_cl_fp6.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i), config.inPE_wei_totalWidth, config.inWeiBusWidth - config.inPE_wei_totalWidth) }.unzip3
-    val in_w_w4_zero_fp6 = in_w_w4_cl_fp6.map(f => f.isZero)
+    val dualSig  = dualRes.map(r => Cat(r(1)._1, r(0)._1))
+    val dualExp  = dualRes.map(r => Cat(r(1)._2, r(0)._2))
+    val dualSign = dualRes.map(r => Cat(r(1)._3, r(0)._3))
+    val dualMask = dualRes.map(r => Cat(r(1)._4.asUInt, r(0)._4.asUInt))
+    val dualNaN  = dualRes.map(r => r(0)._5 || r(1)._5)
 
-    when (weiType.exp === 2.U && weiType.sig === 4.U) {
-      inW_pe := VecInit(sigs_w_w4_fp6_0).asUInt
-      inW_exp := VecInit(exps_w_w4_fp6_0).asUInt
-      inW_sign := VecInit.tabulate(2){ i => signs_w_w4_fp6_0(0) }.asUInt
-      in_w_mask := VecInit.tabulate(2){i => in_w_w4_zero_fp6(0)}.asUInt
-    }
-  }
-  if (config.weiSupportFp8_0) {
-    val in_w_w4_cl_fp8 = lanes1_w.map { f => classify(MxFormat.FP8_E4M3, f(7, 0)) }
-    val (exps_w_w4_fp8_0, sigs_w_w4_fp8_0, signs_w_w4_fp8_0) = in_w_w4_cl_fp8.zipWithIndex.map { case (f, i) => pack(f, config.expAdderWidths(i), config.inPE_wei_totalWidth, config.inWeiBusWidth - config.inPE_wei_totalWidth) }.unzip3
-    val in_w_w4_zero_fp8 = in_w_w4_cl_fp8.map(f => f.isZero)
+    val sngSig   = sngRes.map(_._1)
+    val sngExp   = sngRes.map(_._2)
+    val sngSign  = sngRes.map(r => Fill(2, r._3))
+    val sngMask  = sngRes.map(r => Fill(2, r._4.asUInt))
+    val sngNaN   = sngRes.map(_._5)
 
-    when (weiType.exp === 4.U && weiType.sig === 4.U) {
-      inW_pe := VecInit(sigs_w_w4_fp8_0).asUInt
-      inW_exp := VecInit(exps_w_w4_fp8_0).asUInt
-      inW_sign := VecInit.tabulate(2){ i => signs_w_w4_fp8_0(0) }.asUInt
-      in_w_mask := VecInit.tabulate(2){i => in_w_w4_zero_fp8(0)}.asUInt
-      nanW := in_w_w4_cl_fp8(0).isNaN
+    (dualRes, sngRes) match {
+      case (Some(_), None) =>
+        inW_pe    := dualSig.get
+        inW_exp   := dualExp.get
+        inW_sign  := dualSign.get
+        in_w_mask := dualMask.get
+        nanW      := dualNaN.get
+      case (None, Some(_)) =>
+        inW_pe    := sngSig.get
+        inW_exp   := sngExp.get
+        inW_sign  := sngSign.get
+        in_w_mask := sngMask.get
+        nanW      := sngNaN.get
+      case (Some(_), Some(_)) =>
+        val selSingle = weiType.sig === 4.U
+        inW_pe    := Mux(selSingle, sngSig.get, dualSig.get)
+        inW_exp   := Mux(selSingle, sngExp.get, dualExp.get)
+        inW_sign  := Mux(selSingle, sngSign.get, dualSign.get)
+        in_w_mask := Mux(selSingle, sngMask.get, dualMask.get)
+        nanW      := Mux(selSingle, sngNaN.get,  dualNaN.get)
+      case (None, None) =>
+        throw new IllegalStateException("MxFpMul: weiFormats is empty")
     }
   }
 
