@@ -8,12 +8,36 @@ import org.scalatest.matchers.should.Matchers
 import scala.util.Random
 import hardfloat._
 
+// Shared IO bundle for both MxFpMul and MxHardfloatFMA harnesses. The two DUTs
+// have byte-identical IO; exposing a common harness bundle lets the randomized
+// test base target either one via `makeHarness`.
+class Bf16OutHarnessIOBundle(config: MxConfig) extends Bundle {
+  val in_activation = Input(UInt(config.inActBusWidth.W))
+  val type_a        = Input(new MxTypeBundle())
+  val in_weights    = Input(UInt(config.inWeiBusWidth.W))
+  val type_w        = Input(new MxTypeBundle())
+  val mode          = Input(new mxMode())
+  val enable        = Input(Bool())
+  // BF16 raw C (E8M7): 1|8|7 = 16b
+  val c_raw         = Input(UInt(16.W))
+  // 4 × BF16 packed LSB-first (lane0 in [15:0])
+  val out_bf16      = Output(UInt(64.W))
+  // Each DUT lane widened to recFN(8,8) (BF16) → 4 × 17 = 68b, lane0 at [16:0].
+  val out_recfn     = Output(UInt(68.W))
+  // Observe the rec_c vector actually applied to the DUT.
+  val rec_c_applied = Output(UInt((config.numActiveOutputLanes * config.accFormat.recoded).W))
+}
+
+abstract class Bf16OutHarnessBase(config: MxConfig) extends Module {
+  val io: Bf16OutHarnessIOBundle
+}
+
 /** Harness that mirrors *new* MxFpMul IO exactly, but:
   *  - Accepts BF16 raw C (E8M7, 16b) and recodes to recFN(8,8) to drive dut.io.rec_c
   *  - Exposes dut.io.out as 4×BF16 raw packed (64b) for easy checking/printing
   */
 class MxFpMulHarnessBf16Out_NewIO(config: MxConfig, lut: Boolean)
-    extends Module {
+    extends Bf16OutHarnessBase(config) {
 
   val dut = Module(new MxFpMul(config, lut))
 
@@ -22,28 +46,7 @@ class MxFpMulHarnessBf16Out_NewIO(config: MxConfig, lut: Boolean)
   val accRecW   = config.accFormat.recoded
   val numActive = config.numActiveOutputLanes
 
-  val io = IO(new Bundle {
-    val in_activation = Input(UInt(dut.io.in_activation.getWidth.W))
-    val type_a        = Input(chiselTypeOf(dut.io.type_a))
-    val in_weights    = Input(UInt(dut.io.in_weights.getWidth.W))
-    val type_w        = Input(chiselTypeOf(dut.io.type_w))
-    val mode          = Input(chiselTypeOf(dut.io.mode))
-    val enable        = Input(Bool())
-
-    // BF16 raw C (E8M7): 1|8|7 = 16b
-    val c_raw         = Input(UInt(16.W))
-
-    // 4 × BF16 packed LSB-first (lane0 in [15:0])
-    val out_bf16      = Output(UInt(64.W))
-
-    // Widened output: each DUT lane widened from recFN(accFormat) up to
-    // recFN(8,8) (BF16), so the port is always 4 × 17 = 68b, lane0 at [16:0].
-    // Missing lanes (numActive < 4) read as zero.
-    val out_recfn     = Output(UInt(68.W))
-
-    // Observe what rec_c actually got applied
-    val rec_c_applied = Output(UInt(dut.io.rec_c.getWidth.W))
-  })
+  val io = IO(new Bf16OutHarnessIOBundle(config))
 
   val computedMode = requiredPEMode(io.type_a, io.type_w)
   dut.io.mode := computedMode

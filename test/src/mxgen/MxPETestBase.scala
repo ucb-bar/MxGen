@@ -8,7 +8,7 @@ import org.scalatest.matchers.should.Matchers
 import scala.util.Random
 import hardfloat._
 
-/** Shared test infrastructure for per-config MxFpMul tests.
+/** Shared test infrastructure for per-config PE tests (MxFpMul or MxHardfloatFMA).
   *
   * Concrete test specs extend this trait and override:
   *   - `testConfig`   : the MxConfig to elaborate
@@ -17,6 +17,9 @@ import hardfloat._
   *   - `weiFormats`   : weight format variants to test
   *   - `sameFormatOnly` (optional): restrict to same-format pairs
   *   - `trialsPerCombo` (optional): number of random trials per combo
+  *   - `makeHarness` (optional): override to target a different DUT wrapper
+  *                                (default = MxFpMul). The `MxHardfloatFMAPETestBase`
+  *                                trait overrides this to wrap MxHardfloatFMA.
   */
 trait MxPETestBase extends AnyFlatSpec with ChiselScalatestTester with Matchers {
 
@@ -27,6 +30,10 @@ trait MxPETestBase extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   def weiFormats: Seq[FormatDesc]
   def sameFormatOnly: Boolean = false
   def trialsPerCombo: Int = 10
+
+  /** DUT factory. Override to target a different harness (e.g. MxHardfloatFMA). */
+  def makeHarness(config: MxConfig): Bf16OutHarnessBase =
+    new MxFpMulHarnessBf16Out_NewIO(config, lut = false)
 
   // ---------- small-format helpers ----------
   case class MiniFmt(eBits: Int, mBits: Int, bias: Int) {
@@ -212,7 +219,7 @@ trait MxPETestBase extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   // ---------- DUT driving ----------
-  def pokeTypesAndMode(h: MxFpMulHarnessBf16Out_NewIO, aType: Int, aAlt: Boolean, wType: Int, wAlt: Boolean): Unit = {
+  def pokeTypesAndMode(h: Bf16OutHarnessBase, aType: Int, aAlt: Boolean, wType: Int, wAlt: Boolean): Unit = {
     def expSigFromMxFormat(fmt: Int, alt: Boolean): (Int, Int) = fmt match {
       case 0 => (2, 2)
       case 1 => if (alt) (3, 3) else (2, 4)
@@ -243,7 +250,7 @@ trait MxPETestBase extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   it should "run randomized combos and self-check lanes" in {
     val config = testConfig
 
-    test(new MxFpMulHarnessBf16Out_NewIO(config, lut = false))
+    test(makeHarness(config))
       .withAnnotations(Seq(WriteVcdAnnotation)) { h =>
 
         val rng = new Random(0xBEEFBABE)

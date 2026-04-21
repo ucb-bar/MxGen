@@ -21,3 +21,27 @@
 
 - spec: mxgen.MxFpMul_AllATypes_BF16Out_SelfChecking_NewIO_Spec
   label: All Formats
+
+- spec: mxgen.MxHardfloatFMA_FP4Only_BF16Out_Spec
+  label: HFMA — FP4 Only
+
+- spec: mxgen.MxHardfloatFMA_FP6E3M2Only_BF16Out_Spec
+  label: HFMA — FP6 E3M2 Only
+
+- spec: mxgen.MxHardfloatFMA_FP8E4M3Only_BF16Out_Spec
+  label: HFMA — FP8 E4M3 Only
+
+- spec: mxgen.MxHardfloatFMA_FP6_BF16Out_Spec
+  label: HFMA — FP6 (E2M3+E3M2)
+
+- spec: mxgen.MxHardfloatFMA_FP8_BF16Out_Spec
+  label: HFMA — FP8 (E4M3+E5M2)
+
+- spec: mxgen.MxHardfloatFMA_MxGemmini_BF16Out_Spec
+  label: HFMA — MxGemmini (FP4+E3M2+E4M3)
+
+- spec: mxgen.MxHardfloatFMA_NoCross_BF16Out_Spec
+  label: HFMA — All Formats, No Cross
+
+- spec: mxgen.MxHardfloatFMA_AllFormats_BF16Out_Spec
+  label: HFMA — All Formats
