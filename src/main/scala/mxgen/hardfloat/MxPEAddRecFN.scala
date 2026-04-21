@@ -3,6 +3,7 @@ package mxgen.hardfloatHelper
 import chisel3._
 import chisel3.util._
 import mxgen.hardfloat._
+import mxgen.hardfloat.consts._
 
 // MxPEAddRecFN — like MxMulAddRecFN but consumes the raw integer product from
 // MxPE directly, skipping the normalize() + MxPEOutToRaw combinational cones
@@ -112,7 +113,7 @@ class MxPEAddRecFN(expWidth: Int, sigWidth: Int, peExpWidth: Int, bias: Int)
     val mulAddC: UInt = alignedSigC(sigWidth * 2, 1)
     val mulAddResult = peMagShifted +& mulAddC
 
-    val postMul = Module(new MulAddRecFNToRaw_postMul(expWidth, sigWidth))
+    val postMul = Module(new MulAddRecFNToRaw_postMul_notCDom(expWidth, sigWidth))
     postMul.io.fromPreMul.isSigNaNAny     := isSigNaNRawFloat(rawC)
     postMul.io.fromPreMul.isNaNAOrB       := io.peIsNaN
     postMul.io.fromPreMul.isInfA          := false.B
@@ -123,23 +124,174 @@ class MxPEAddRecFN(expWidth: Int, sigWidth: Int, peExpWidth: Int, bias: Int)
     postMul.io.fromPreMul.isNaNC          := rawC.isNaN
     postMul.io.fromPreMul.isInfC          := rawC.isInf
     postMul.io.fromPreMul.isZeroC         := rawC.isZero
-    postMul.io.fromPreMul.sExpSum         :=
-        Mux(CIsDominant, rawC.sExp, sExpAlignedProd - sigWidth.S)
+    // Widened-notCDom postMul uses a 27-bit odd-width absSigSum so its CLZ
+    // pair alignment matches stock's (top reducedVec covers a single bit).
+    // With extraction (absSigSumWidth, absSigSumWidth - sigWidth - 4) where
+    // absSigSumWidth=3*sigWidth+3, leading-1 always lands at mainSig bit
+    // sigWidth+3 or sigWidth+4. Relative to stock (which wires sExpSum =
+    // sExpAlignedProd - sigWidth), mine's nearNormDist is sigWidth larger
+    // for the same peMag — the sigWidth-wider absSigSum adds sigWidth/2
+    // extra leading zeros in the reduced domain. Net offset to match: 0.
+    postMul.io.fromPreMul.sExpSum         := sExpAlignedProd
     postMul.io.fromPreMul.doSubMags       := doSubMags
-    postMul.io.fromPreMul.CIsDominant     := CIsDominant
-    postMul.io.fromPreMul.CDom_CAlignDist := CAlignDist(log2Ceil(sigWidth + 1) - 1, 0)
+    postMul.io.fromPreMul.CIsDominant     := false.B
+    postMul.io.fromPreMul.CDom_CAlignDist := 0.U
     postMul.io.fromPreMul.highAlignedSigC := alignedSigC(sigSumWidth - 1, sigWidth * 2 + 1)
     postMul.io.fromPreMul.bit0AlignedSigC := alignedSigC(0)
 
     postMul.io.mulAddResult := mulAddResult
     postMul.io.roundingMode := io.roundingMode
 
+    // When CAlignDist=0 (c dominates: product is zero, or product's exp is
+    // ≤ c's exp - (sigWidth+3)), the widened-notCDom path can't normalize c
+    // — c's implicit 1 either sits at alignedSigC bit 27 (outside
+    // highAlignedSigC's [26:17] slice) or lands at sigSum[26] where the
+    // full-width CLZ would misinterpret it as the sign bit. Bypass the
+    // postMul for this narrow case. For CAlignDist≥1, c's implicit 1 is
+    // always inside highAlignedSigC and the widened CLZ produces the
+    // correct result. Product contribution is ≤ 1/8 ULP of c when
+    // CAlignDist=0, below the rounder's round bit — OR it into sig[0] as
+    // sticky to preserve the inexact flag.
+    val cDominant =
+        (CAlignDist === 0.U) && ! rawC.isZero && ! rawC.isNaN &&
+            ! rawC.isInf && ! io.peIsNaN
+    val productNonZero = io.peMag.orR && ! io.peIsZero
+    val passthroughC = cDominant
+    val rawOutFinal = WireDefault(postMul.io.rawOut)
+    when (passthroughC) {
+        rawOutFinal.isNaN  := false.B
+        rawOutFinal.isInf  := false.B
+        rawOutFinal.isZero := false.B
+        rawOutFinal.sign   := rawC.sign
+        rawOutFinal.sExp   := rawC.sExp
+        // rawC.sig has bit sigWidth always 0 and bit sigWidth-1 as the
+        // implicit 1 (see rawFloatFromRecFN). The rounder's input sig
+        // (width sigWidth+3) needs its "leading 1" at bit sigWidth+1
+        // (the normal, non-carry form). Shift rawC.sig left by 2 so its
+        // implicit 1 lands at bit sigWidth+1, bit sigWidth+2 stays zero.
+        // OR the product-nonzero flag into the sticky (bit 0) so inexact
+        // gets flagged when product contributes below the round bit.
+        rawOutFinal.sig    := (rawC.sig << 2) | productNonZero
+    }
+
     val roundRawFNToRecFN = Module(new RoundRawFNToRecFN(expWidth, sigWidth, 0))
     roundRawFNToRecFN.io.invalidExc     := postMul.io.invalidExc
     roundRawFNToRecFN.io.infiniteExc    := false.B
-    roundRawFNToRecFN.io.in             := postMul.io.rawOut
+    roundRawFNToRecFN.io.in             := rawOutFinal
     roundRawFNToRecFN.io.roundingMode   := io.roundingMode
     roundRawFNToRecFN.io.detectTininess := io.detectTininess
     io.out            := roundRawFNToRecFN.io.out
     io.exceptionFlags := roundRawFNToRecFN.io.exceptionFlags
+}
+
+// Fork of hardfloat's MulAddRecFNToRaw_postMul that drops the CDom path. The
+// original speculatively computes both CDom (c-dominates) and notCDom paths
+// every cycle, each with its own barrel shifter / sticky logic, and muxes at
+// the end on CIsDominant. We keep only notCDom.
+//
+// Correctness caveat: notCDom's CLZ operates on sigSum(2*sigWidth+2, 0), which
+// discards the top sigWidth bits of sigSum where c's MSB lands in CDom cases.
+// When c dominates the product, this fork mis-normalizes. Valid only if the
+// workload never hits CDom — tests will surface any case that does.
+class MulAddRecFNToRaw_postMul_notCDom(expWidth: Int, sigWidth: Int)
+    extends RawModule
+{
+    override def desiredName =
+        s"MulAddRecFNToRaw_postMul_notCDom_e${expWidth}_s${sigWidth}"
+    val io = IO(new Bundle {
+        val fromPreMul   = Input(new MulAddRecFN_interIo(expWidth, sigWidth))
+        val mulAddResult = Input(UInt((sigWidth * 2 + 1).W))
+        val roundingMode = Input(UInt(3.W))
+        val invalidExc   = Output(Bool())
+        val rawOut       = Output(new RawFloat(expWidth, sigWidth + 2))
+    })
+
+    // Widened notCDom: absSigSum is 27 bits wide (odd, top bit padded 0) so
+    // the CLZ's top reducedVec entry covers a single bit, mirroring stock's
+    // 19-bit odd-width pattern. This keeps the leading 1 pinned to mainSig
+    // bit sigWidth+3 or sigWidth+4 regardless of peMag's MSB parity — stock
+    // relies on the same invariant for its completeCancellation check.
+    // Caller must offset sExpSum accordingly — see MxPEAddRecFN's
+    // `sExpAlignedProd + 2.S`.
+    val sigSumWidth      = sigWidth * 3 + 3
+    val absSigSumWidth   = sigSumWidth           // 3*sigWidth + 3, odd
+    val roundingMode_min = (io.roundingMode === round_min)
+    val opSignC          = io.fromPreMul.signProd ^ io.fromPreMul.doSubMags
+
+    val sigSum =
+        Cat(Mux(io.mulAddResult(sigWidth * 2),
+                io.fromPreMul.highAlignedSigC + 1.U,
+                io.fromPreMul.highAlignedSigC),
+            io.mulAddResult(sigWidth * 2 - 1, 0),
+            io.fromPreMul.bit0AlignedSigC)
+
+    val signSigSum = sigSum(sigSumWidth - 1)
+    val absSigSum =
+        Cat(0.U(1.W),
+            Mux(signSigSum,
+                ~sigSum(sigSumWidth - 2, 0),
+                sigSum(sigSumWidth - 2, 0) + io.fromPreMul.doSubMags))
+    val reduced2AbsSigSum = orReduceBy2(absSigSum)
+    val normDistReduced2  = countLeadingZeros(reduced2AbsSigSum)
+    val nearNormDist      = normDistReduced2 << 1
+    val notCDom_sExp =
+        io.fromPreMul.sExpSum - nearNormDist.asUInt.zext
+    // After shift-left by nearNormDist, the top reducedVec pad bit parity
+    // forces the leading 1 into one of the top two slots. Extract a
+    // (sigWidth+5)-bit window whose top bit is absSigSumWidth (one above the
+    // original MSB, reached via the shift overflow), matching stock's
+    // `shifted(2*sigWidth+3, sigWidth-1)` shape.
+    val notCDom_mainSig =
+        (absSigSum << nearNormDist)(
+            absSigSumWidth, absSigSumWidth - sigWidth - 4)
+    // Stock's sticky formula assumes a (2*sigWidth+3)-bit absSigSum; ours is
+    // (3*sigWidth+3)-bit. The "below mainSig[2:0]" range at nearNormDist=0
+    // grows from sigWidth-1 to 2*sigWidth-1 bits, which means reduced2
+    // coverage grows from sigWidth/2+1 to sigWidth+1 entries and the mask
+    // needs to be twice as wide to avoid collapsing to 0 at large
+    // normDistReduced2. Widen both the orReduceBy2 input and the lowMask
+    // topBound accordingly.
+    val notCDom_reduced4SigExtra =
+        (orReduceBy2(
+             reduced2AbsSigSum(sigWidth, 0) <<
+                 (sigWidth & 1)) &
+             lowMask(normDistReduced2 >> 1, 0, (2 * sigWidth + 2) >> 2)
+        ).orR
+    val notCDom_sig =
+        Cat(notCDom_mainSig >> 3,
+            notCDom_mainSig(2, 0).orR || notCDom_reduced4SigExtra)
+    val notCDom_completeCancellation =
+        (notCDom_sig(sigWidth + 2, sigWidth + 1) === 0.U)
+    val notCDom_sign =
+        Mux(notCDom_completeCancellation,
+            roundingMode_min,
+            io.fromPreMul.signProd ^ signSigSum)
+
+    val notNaN_isInfProd = io.fromPreMul.isInfA || io.fromPreMul.isInfB
+    val notNaN_isInfOut  = notNaN_isInfProd || io.fromPreMul.isInfC
+    val notNaN_addZeros =
+        (io.fromPreMul.isZeroA || io.fromPreMul.isZeroB) &&
+            io.fromPreMul.isZeroC
+
+    io.invalidExc :=
+        io.fromPreMul.isSigNaNAny ||
+        (io.fromPreMul.isInfA && io.fromPreMul.isZeroB) ||
+        (io.fromPreMul.isZeroA && io.fromPreMul.isInfB) ||
+        (! io.fromPreMul.isNaNAOrB &&
+             (io.fromPreMul.isInfA || io.fromPreMul.isInfB) &&
+             io.fromPreMul.isInfC &&
+             io.fromPreMul.doSubMags)
+    io.rawOut.isNaN  := io.fromPreMul.isNaNAOrB || io.fromPreMul.isNaNC
+    io.rawOut.isInf  := notNaN_isInfOut
+    io.rawOut.isZero := notNaN_addZeros || notCDom_completeCancellation
+    io.rawOut.sign :=
+        (notNaN_isInfProd && io.fromPreMul.signProd) ||
+        (io.fromPreMul.isInfC && opSignC) ||
+        (notNaN_addZeros && ! roundingMode_min &&
+            io.fromPreMul.signProd && opSignC) ||
+        (notNaN_addZeros && roundingMode_min &&
+            (io.fromPreMul.signProd || opSignC)) ||
+        (! notNaN_isInfOut && ! notNaN_addZeros && notCDom_sign)
+    io.rawOut.sExp := notCDom_sExp
+    io.rawOut.sig  := notCDom_sig
 }
