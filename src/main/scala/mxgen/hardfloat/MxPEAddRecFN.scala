@@ -40,11 +40,13 @@ import mxgen.hardfloat.consts._
 //   equivalent rawA.sExp = unbiased_product_exp + 2^expWidth = peExp - bias
 //   + 2^expWidth. Substituting:
 //     sExpAlignedProd = peExp + (2^expWidth - bias + sigWidth + 3)
-class MxPEAddRecFN(expWidth: Int, sigWidth: Int, peExpWidth: Int, bias: Int)
-    extends RawModule
+class MxPEAddRecFN(expWidth: Int, sigWidth: Int, peExpWidth: Int, bias: Int, latency: Int = 0)
+    extends Module
 {
+    require(latency == 0 || latency == 1,
+        s"MxPEAddRecFN: latency must be 0 or 1 (got $latency)")
     override def desiredName =
-        s"MxPEAddRecFN_e${expWidth}_s${sigWidth}_pe${peExpWidth}"
+        s"MxPEAddRecFN_l${latency}_e${expWidth}_s${sigWidth}_pe${peExpWidth}"
 
     val io = IO(new Bundle {
         val peMag    = Input(UInt(sigWidth.W))
@@ -59,6 +61,9 @@ class MxPEAddRecFN(expWidth: Int, sigWidth: Int, peExpWidth: Int, bias: Int)
         val exceptionFlags = Output(Bits(5.W))
     })
 
+    // -------------------------------------------------------------------------
+    // Stage 1: rawC decode, c-alignment, mulAddResult.
+    // -------------------------------------------------------------------------
     val rawC = rawFloatFromRecFN(expWidth, sigWidth, io.c)
 
     val sigSumWidth = sigWidth * 3 + 3
@@ -113,34 +118,67 @@ class MxPEAddRecFN(expWidth: Int, sigWidth: Int, peExpWidth: Int, bias: Int)
     val mulAddC: UInt = alignedSigC(sigWidth * 2, 1)
     val mulAddResult = peMagShifted +& mulAddC
 
-    val postMul = Module(new MulAddRecFNToRaw_postMul_notCDom(expWidth, sigWidth))
-    postMul.io.fromPreMul.isSigNaNAny     := isSigNaNRawFloat(rawC)
-    postMul.io.fromPreMul.isNaNAOrB       := io.peIsNaN
-    postMul.io.fromPreMul.isInfA          := false.B
-    postMul.io.fromPreMul.isZeroA         := io.peIsZero
-    postMul.io.fromPreMul.isInfB          := false.B
-    postMul.io.fromPreMul.isZeroB         := false.B
-    postMul.io.fromPreMul.signProd        := signProd
-    postMul.io.fromPreMul.isNaNC          := rawC.isNaN
-    postMul.io.fromPreMul.isInfC          := rawC.isInf
-    postMul.io.fromPreMul.isZeroC         := rawC.isZero
-    // Widened-notCDom postMul uses a 27-bit odd-width absSigSum so its CLZ
-    // pair alignment matches stock's (top reducedVec covers a single bit).
-    // With extraction (absSigSumWidth, absSigSumWidth - sigWidth - 4) where
+    // Build the inter-stage bundle (same shape as stock's toPostMul). Widened-
+    // notCDom postMul uses a 27-bit odd-width absSigSum so its CLZ pair
+    // alignment matches stock's (top reducedVec covers a single bit). With
+    // extraction (absSigSumWidth, absSigSumWidth - sigWidth - 4) where
     // absSigSumWidth=3*sigWidth+3, leading-1 always lands at mainSig bit
-    // sigWidth+3 or sigWidth+4. Relative to stock (which wires sExpSum =
-    // sExpAlignedProd - sigWidth), mine's nearNormDist is sigWidth larger
-    // for the same peMag — the sigWidth-wider absSigSum adds sigWidth/2
-    // extra leading zeros in the reduced domain. Net offset to match: 0.
-    postMul.io.fromPreMul.sExpSum         := sExpAlignedProd
-    postMul.io.fromPreMul.doSubMags       := doSubMags
-    postMul.io.fromPreMul.CIsDominant     := false.B
-    postMul.io.fromPreMul.CDom_CAlignDist := 0.U
-    postMul.io.fromPreMul.highAlignedSigC := alignedSigC(sigSumWidth - 1, sigWidth * 2 + 1)
-    postMul.io.fromPreMul.bit0AlignedSigC := alignedSigC(0)
+    // sigWidth+3 or sigWidth+4. Net sExpSum offset vs. stock: 0.
+    val toPostMul = Wire(new MulAddRecFN_interIo(expWidth, sigWidth))
+    toPostMul.isSigNaNAny     := isSigNaNRawFloat(rawC)
+    toPostMul.isNaNAOrB       := io.peIsNaN
+    toPostMul.isInfA          := false.B
+    toPostMul.isZeroA         := io.peIsZero
+    toPostMul.isInfB          := false.B
+    toPostMul.isZeroB         := false.B
+    toPostMul.signProd        := signProd
+    toPostMul.isNaNC          := rawC.isNaN
+    toPostMul.isInfC          := rawC.isInf
+    toPostMul.isZeroC         := rawC.isZero
+    toPostMul.sExpSum         := sExpAlignedProd
+    toPostMul.doSubMags       := doSubMags
+    toPostMul.CIsDominant     := false.B
+    toPostMul.CDom_CAlignDist := 0.U
+    toPostMul.highAlignedSigC := alignedSigC(sigSumWidth - 1, sigWidth * 2 + 1)
+    toPostMul.bit0AlignedSigC := alignedSigC(0)
 
-    postMul.io.mulAddResult := mulAddResult
-    postMul.io.roundingMode := io.roundingMode
+    // Passthrough fields needed by the cDominant bypass in stage 2. See
+    // the `when (passthroughC)` block below for the shape rationale.
+    class PassthroughBundle extends Bundle {
+        val cDominant      = Bool()
+        val productNonZero = Bool()
+        val rawCSign       = Bool()
+        val rawCSExp       = SInt((expWidth + 2).W)
+        val rawCSig        = UInt((sigWidth + 1).W)
+    }
+    val passthrough = Wire(new PassthroughBundle)
+    passthrough.cDominant      :=
+        (CAlignDist === 0.U) && ! rawC.isZero && ! rawC.isNaN &&
+            ! rawC.isInf && ! io.peIsNaN
+    passthrough.productNonZero := io.peMag.orR && ! io.peIsZero
+    passthrough.rawCSign       := rawC.sign
+    passthrough.rawCSExp       := rawC.sExp
+    passthrough.rawCSig        := rawC.sig
+
+    // -------------------------------------------------------------------------
+    // Stage boundary. Matches stock MulAddRecFNPipe's cut: inter-stage bundle,
+    // mulAddResult, and the mode signals are registered when latency>=1. We
+    // also carry a small passthrough bundle for the c-dominant bypass that
+    // stock MulAddRecFN doesn't have.
+    // -------------------------------------------------------------------------
+    val toPostMul_s1   = if (latency >= 1) RegNext(toPostMul)         else toPostMul
+    val mulAddRes_s1   = if (latency >= 1) RegNext(mulAddResult)      else mulAddResult
+    val roundMode_s1   = if (latency >= 1) RegNext(io.roundingMode)   else io.roundingMode
+    val detectTiny_s1  = if (latency >= 1) RegNext(io.detectTininess) else io.detectTininess
+    val passthrough_s1 = if (latency >= 1) RegNext(passthrough)       else passthrough
+
+    // -------------------------------------------------------------------------
+    // Stage 2: CLZ-based normalization, c-dominant bypass, rounding.
+    // -------------------------------------------------------------------------
+    val postMul = Module(new MulAddRecFNToRaw_postMul_notCDom(expWidth, sigWidth))
+    postMul.io.fromPreMul   := toPostMul_s1
+    postMul.io.mulAddResult := mulAddRes_s1
+    postMul.io.roundingMode := roundMode_s1
 
     // When CAlignDist=0 (c dominates: product is zero, or product's exp is
     // ≤ c's exp - (sigWidth+3)), the widened-notCDom path can't normalize c
@@ -152,18 +190,13 @@ class MxPEAddRecFN(expWidth: Int, sigWidth: Int, peExpWidth: Int, bias: Int)
     // correct result. Product contribution is ≤ 1/8 ULP of c when
     // CAlignDist=0, below the rounder's round bit — OR it into sig[0] as
     // sticky to preserve the inexact flag.
-    val cDominant =
-        (CAlignDist === 0.U) && ! rawC.isZero && ! rawC.isNaN &&
-            ! rawC.isInf && ! io.peIsNaN
-    val productNonZero = io.peMag.orR && ! io.peIsZero
-    val passthroughC = cDominant
     val rawOutFinal = WireDefault(postMul.io.rawOut)
-    when (passthroughC) {
+    when (passthrough_s1.cDominant) {
         rawOutFinal.isNaN  := false.B
         rawOutFinal.isInf  := false.B
         rawOutFinal.isZero := false.B
-        rawOutFinal.sign   := rawC.sign
-        rawOutFinal.sExp   := rawC.sExp
+        rawOutFinal.sign   := passthrough_s1.rawCSign
+        rawOutFinal.sExp   := passthrough_s1.rawCSExp
         // rawC.sig has bit sigWidth always 0 and bit sigWidth-1 as the
         // implicit 1 (see rawFloatFromRecFN). The rounder's input sig
         // (width sigWidth+3) needs its "leading 1" at bit sigWidth+1
@@ -171,15 +204,15 @@ class MxPEAddRecFN(expWidth: Int, sigWidth: Int, peExpWidth: Int, bias: Int)
         // implicit 1 lands at bit sigWidth+1, bit sigWidth+2 stays zero.
         // OR the product-nonzero flag into the sticky (bit 0) so inexact
         // gets flagged when product contributes below the round bit.
-        rawOutFinal.sig    := (rawC.sig << 2) | productNonZero
+        rawOutFinal.sig    := (passthrough_s1.rawCSig << 2) | passthrough_s1.productNonZero
     }
 
     val roundRawFNToRecFN = Module(new RoundRawFNToRecFN(expWidth, sigWidth, 0))
     roundRawFNToRecFN.io.invalidExc     := postMul.io.invalidExc
     roundRawFNToRecFN.io.infiniteExc    := false.B
     roundRawFNToRecFN.io.in             := rawOutFinal
-    roundRawFNToRecFN.io.roundingMode   := io.roundingMode
-    roundRawFNToRecFN.io.detectTininess := io.detectTininess
+    roundRawFNToRecFN.io.roundingMode   := roundMode_s1
+    roundRawFNToRecFN.io.detectTininess := detectTiny_s1
     io.out            := roundRawFNToRecFN.io.out
     io.exceptionFlags := roundRawFNToRecFN.io.exceptionFlags
 }

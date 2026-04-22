@@ -390,7 +390,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
   def peMagOut1: UInt = out_pe(outSig - 1, 0)
 
   val addUnits = Seq.fill(config.numActiveOutputLanes)(
-    Module(new hardfloatHelper.MxPEAddRecFN(cType.exp, cType.sig, laneExpWidth, outBias)))
+    Module(new hardfloatHelper.MxPEAddRecFN(cType.exp, cType.sig, laneExpWidth, outBias, latency)))
   val outputs = Wire(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
 
   val peIsNaN = nanA || nanW
@@ -454,19 +454,18 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
         (magSel, expSel, signSel, zeroSel)
     }
 
-    // When latency=1, register the product/exponent/metadata right before the
-    // recFN add stage. This places the pipeline boundary after the PE product
-    // (same position as MulAddRecFNPipe's register in the hardfloat datapath).
-    def dly[T <: Data](x: T): T = if (latency >= 1) RegNext(x) else x
-
+    // The pipeline register for latency=1 lives inside MxPEAddRecFN, at the
+    // mulAddResult boundary — same split as stock hardfloat MulAddRecFNPipe.
+    // Stage 1 = PE + MxExp + rawC decode + c-alignment + product-sum;
+    // Stage 2 = CLZ + normalize + round.
     addUnits(i).io.roundingMode   := hardfloat.consts.round_near_even
     addUnits(i).io.detectTininess := hardfloat.consts.tininess_afterRounding
-    addUnits(i).io.peMag    := dly(peMag)
-    addUnits(i).io.peExp    := dly(peExp)
-    addUnits(i).io.peSign   := dly(peSign)
-    addUnits(i).io.peIsZero := dly(peZero)
-    addUnits(i).io.peIsNaN  := dly(peIsNaN)
-    addUnits(i).io.c        := dly(recIn_c(i))
+    addUnits(i).io.peMag    := peMag
+    addUnits(i).io.peExp    := peExp
+    addUnits(i).io.peSign   := peSign
+    addUnits(i).io.peIsZero := peZero
+    addUnits(i).io.peIsNaN  := peIsNaN
+    addUnits(i).io.c        := recIn_c(i)
 
     outputs(i) := addUnits(i).io.out
   }
