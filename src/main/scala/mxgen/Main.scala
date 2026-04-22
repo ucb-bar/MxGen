@@ -10,11 +10,10 @@ import mxgen.hardfloat.{MxHardfloatFMA, MxPerFormatFMA}
 //   Per-format baseline    : generated/per-format/<name>/
 //
 // CLI:
-//   no args           -> generate all three generators for every config
-//   mxfpmul           -> MxFpMul only
-//   hardfloat         -> hardfloat baseline only
-//   performat         -> per-format independent-datapath baseline only
-//   all / both        -> all three
+//   first positional  -> which generator(s): mxfpmul | hardfloat | performat | all
+//                        (default: all)
+//   latency=<0|1>     -> optional flag; adds one pipeline register between
+//                        product and add when =1. Default: 0 (combinational).
 //
 // Configs available out of the box:
 //   MxConfig.fp4Only                    // smallest, FP4 only
@@ -23,10 +22,11 @@ import mxgen.hardfloat.{MxHardfloatFMA, MxPerFormatFMA}
 //   MxConfig.all                        // every format combo (cross products)
 //   MxConfig(actFormats, weiFormats)    // custom format sets
 
-// Thin wrapper that adds input + output pipeline registers around a PE. The
-// inner modules are purely combinational, so synthesis has no timing target
-// without a register boundary on each end.
-class RegisteredMxFpMul(config: MxConfig) extends Module {
+// Thin wrapper that adds input + output pipeline registers around a PE.
+// `latency` is forwarded to the inner module: 0 keeps it combinational
+// (input + output regs only), 1 adds one inner pipeline register between
+// the product and the add stage of the FMA datapath.
+class RegisteredMxFpMul(config: MxConfig, latency: Int = 0) extends Module {
   val accRec   = config.accFormat.recoded
   val numLanes = config.numActiveOutputLanes
   val io = IO(new Bundle {
@@ -39,7 +39,7 @@ class RegisteredMxFpMul(config: MxConfig) extends Module {
     val rec_c         = Input(UInt((numLanes * accRec).W))
     val out           = Output(UInt((numLanes * accRec).W))
   })
-  val inner = Module(new MxFpMul(config, lut = true))
+  val inner = Module(new MxFpMul(config, lut = true, latency = latency))
   inner.io.in_activation := RegNext(io.in_activation)
   inner.io.type_a        := RegNext(io.type_a)
   inner.io.in_weights    := RegNext(io.in_weights)
@@ -50,7 +50,7 @@ class RegisteredMxFpMul(config: MxConfig) extends Module {
   io.out                 := RegNext(inner.io.out)
 }
 
-class RegisteredMxHardfloatFMA(config: MxConfig) extends Module {
+class RegisteredMxHardfloatFMA(config: MxConfig, latency: Int = 0) extends Module {
   val accRec   = config.accFormat.recoded
   val numLanes = config.numActiveOutputLanes
   val io = IO(new Bundle {
@@ -63,7 +63,7 @@ class RegisteredMxHardfloatFMA(config: MxConfig) extends Module {
     val rec_c         = Input(UInt((numLanes * accRec).W))
     val out           = Output(UInt((numLanes * accRec).W))
   })
-  val inner = Module(new MxHardfloatFMA(config))
+  val inner = Module(new MxHardfloatFMA(config, latency = latency))
   inner.io.in_activation := RegNext(io.in_activation)
   inner.io.type_a        := RegNext(io.type_a)
   inner.io.in_weights    := RegNext(io.in_weights)
@@ -74,7 +74,7 @@ class RegisteredMxHardfloatFMA(config: MxConfig) extends Module {
   io.out                 := RegNext(inner.io.out)
 }
 
-class RegisteredMxPerFormatFMA(config: MxConfig) extends Module {
+class RegisteredMxPerFormatFMA(config: MxConfig, latency: Int = 0) extends Module {
   val accRec   = config.accFormat.recoded
   val numLanes = config.numActiveOutputLanes
   val io = IO(new Bundle {
@@ -87,7 +87,7 @@ class RegisteredMxPerFormatFMA(config: MxConfig) extends Module {
     val rec_c         = Input(UInt((numLanes * accRec).W))
     val out           = Output(UInt((numLanes * accRec).W))
   })
-  val inner = Module(new MxPerFormatFMA(config))
+  val inner = Module(new MxPerFormatFMA(config, latency = latency))
   inner.io.in_activation := RegNext(io.in_activation)
   inner.io.type_a        := RegNext(io.type_a)
   inner.io.in_weights    := RegNext(io.in_weights)
@@ -120,7 +120,12 @@ object Main extends App {
     ),
   )
 
-  val arg = args.headOption.getOrElse("all").toLowerCase
+  val positional = args.filterNot(_.contains("="))
+  val flags      = args.filter(_.contains("=")).map { s =>
+    val Array(k, v) = s.split("=", 2); k.toLowerCase -> v
+  }.toMap
+
+  val arg = positional.headOption.getOrElse("all").toLowerCase
   val runAll      = arg == "all" || arg == "both"
   val runMxFpMul  = runAll || arg == "mxfpmul"
   val runBaseline = runAll || arg == "hardfloat"
@@ -128,27 +133,33 @@ object Main extends App {
   require(runMxFpMul || runBaseline || runPerFmt,
     s"Unknown argument '$arg' — expected 'mxfpmul', 'hardfloat', 'performat', or 'all'")
 
+  val latency = flags.get("latency").map(_.toInt).getOrElse(0)
+  require(latency == 0 || latency == 1,
+    s"latency must be 0 or 1 (got $latency)")
+  val latencyDir = if (latency == 0) "" else s"-lat$latency"
+  println(s"=== Elaboration latency=$latency ===")
+
   for ((name, config) <- configs) {
     if (runMxFpMul) {
-      println(s"=== Elaborating MxFpMul: $name ===")
+      println(s"=== Elaborating MxFpMul: $name (latency=$latency) ===")
       println(config.describe)
       circt.stage.ChiselStage.emitSystemVerilogFile(
-        new MxFpMul(config, lut = false),
-        Array("--target-dir", s"generated/$name")
+        new MxFpMul(config, lut = false, latency = latency),
+        Array("--target-dir", s"generated$latencyDir/$name")
       )
     }
     if (runBaseline) {
-      println(s"=== Elaborating hardfloat baseline: $name ===")
+      println(s"=== Elaborating hardfloat baseline: $name (latency=$latency) ===")
       circt.stage.ChiselStage.emitSystemVerilogFile(
-        new MxHardfloatFMA(config),
-        Array("--target-dir", s"generated/hardfloat-baseline/$name")
+        new MxHardfloatFMA(config, latency = latency),
+        Array("--target-dir", s"generated$latencyDir/hardfloat-baseline/$name")
       )
     }
     if (runPerFmt) {
-      println(s"=== Elaborating per-format baseline: $name ===")
+      println(s"=== Elaborating per-format baseline: $name (latency=$latency) ===")
       circt.stage.ChiselStage.emitSystemVerilogFile(
-        new MxPerFormatFMA(config),
-        Array("--target-dir", s"generated/per-format/$name")
+        new MxPerFormatFMA(config, latency = latency),
+        Array("--target-dir", s"generated$latencyDir/per-format/$name")
       )
     }
   }

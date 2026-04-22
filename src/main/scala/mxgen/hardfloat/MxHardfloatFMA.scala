@@ -45,8 +45,11 @@ import mxgen._
 // has a valid high half on the input bus.
 // -----------------------------------------------------------------------------
 
-class MxHardfloatFMA(val config: MxConfig, val uniformBF16: Boolean = true) extends Module {
-  println(s"Creating MxHardfloatFMA baseline (uniformBF16=$uniformBF16) acc=${config.accFormat}")
+class MxHardfloatFMA(val config: MxConfig, val uniformBF16: Boolean = true,
+                     val latency: Int = 0) extends Module {
+  require(latency == 0 || latency == 1,
+    s"MxHardfloatFMA: latency must be 0 or 1 (got $latency)")
+  println(s"Creating MxHardfloatFMA baseline (uniformBF16=$uniformBF16, latency=$latency) acc=${config.accFormat}")
   println(config.describe)
 
   val numLanes = config.numActiveOutputLanes
@@ -258,9 +261,9 @@ class MxHardfloatFMA(val config: MxConfig, val uniformBF16: Boolean = true) exte
     val wRec = selectRecOperand(i, isAct = false, pf.exp, pf.sig)
     outs(i) :=
       (if (pf.exp == aE && pf.sig == aS)
-        BaselineHelpers.mulAddRecFN(aRec, wRec, cLanes(i), aE, aS)
+        BaselineHelpers.mulAddRecFN(aRec, wRec, cLanes(i), aE, aS, latency)
       else
-        BaselineHelpers.mulThenAdd(aRec, wRec, cLanes(i), pf.exp, pf.sig, aE, aS))
+        BaselineHelpers.mulThenAdd(aRec, wRec, cLanes(i), pf.exp, pf.sig, aE, aS, latency))
   }
 
   io.out := outs.asUInt

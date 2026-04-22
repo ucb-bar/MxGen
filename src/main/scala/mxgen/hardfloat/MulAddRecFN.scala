@@ -346,3 +346,52 @@ class MulAddRecFN(expWidth: Int, sigWidth: Int) extends RawModule
     io.exceptionFlags := roundRawFNToRecFN.io.exceptionFlags
 }
 
+// Pipelined MulAddRecFN with a configurable pipeline register between the
+// pre-mul stage (including the integer product mulAddA*mulAddB + mulAddC) and
+// the post-mul stage. latency=0 is combinational (same output as MulAddRecFN);
+// latency=1 inserts one stage of registers right after the product.
+class MulAddRecFNPipe(val latency: Int, expWidth: Int, sigWidth: Int) extends Module
+{
+    require(latency == 0 || latency == 1,
+        s"MulAddRecFNPipe: latency must be 0 or 1 (got $latency)")
+    override def desiredName = s"MulAddRecFNPipe_l${latency}_e${expWidth}_s${sigWidth}"
+    val io = IO(new Bundle {
+        val op = Input(Bits(2.W))
+        val a = Input(Bits((expWidth + sigWidth + 1).W))
+        val b = Input(Bits((expWidth + sigWidth + 1).W))
+        val c = Input(Bits((expWidth + sigWidth + 1).W))
+        val roundingMode   = Input(UInt(3.W))
+        val detectTininess = Input(UInt(1.W))
+        val out = Output(Bits((expWidth + sigWidth + 1).W))
+        val exceptionFlags = Output(Bits(5.W))
+    })
+
+    val preMul = Module(new MulAddRecFNToRaw_preMul(expWidth, sigWidth))
+    preMul.io.op := io.op
+    preMul.io.a  := io.a
+    preMul.io.b  := io.b
+    preMul.io.c  := io.c
+
+    val mulAddResult =
+        (preMul.io.mulAddA * preMul.io.mulAddB) +& preMul.io.mulAddC
+
+    val toPostMul_s1  = if (latency >= 1) RegNext(preMul.io.toPostMul) else preMul.io.toPostMul
+    val mulAddRes_s1  = if (latency >= 1) RegNext(mulAddResult)        else mulAddResult
+    val roundMode_s1  = if (latency >= 1) RegNext(io.roundingMode)     else io.roundingMode
+    val detectTiny_s1 = if (latency >= 1) RegNext(io.detectTininess)   else io.detectTininess
+
+    val postMul = Module(new MulAddRecFNToRaw_postMul(expWidth, sigWidth))
+    postMul.io.fromPreMul   := toPostMul_s1
+    postMul.io.mulAddResult := mulAddRes_s1
+    postMul.io.roundingMode := roundMode_s1
+
+    val round = Module(new RoundRawFNToRecFN(expWidth, sigWidth, 0))
+    round.io.invalidExc     := postMul.io.invalidExc
+    round.io.infiniteExc    := false.B
+    round.io.in             := postMul.io.rawOut
+    round.io.roundingMode   := roundMode_s1
+    round.io.detectTininess := detectTiny_s1
+    io.out            := round.io.out
+    io.exceptionFlags := round.io.exceptionFlags
+}
+

@@ -179,9 +179,12 @@ private[hardfloat] object BaselineHelpers {
 
   // ---------- Arithmetic primitives ----------
 
-  // Fused multiply-add at a single (expWidth, sigWidth).
-  def mulAddRecFN(aRec: UInt, bRec: UInt, cRec: UInt, e: Int, s: Int): UInt = {
-    val m = Module(new MulAddRecFN(e, s))
+  // Fused multiply-add at a single (expWidth, sigWidth). When latency>=1 the
+  // inner pipelined variant drops one register between the product and the
+  // post-mul/round stage.
+  def mulAddRecFN(aRec: UInt, bRec: UInt, cRec: UInt, e: Int, s: Int,
+                  latency: Int = 0): UInt = {
+    val m = Module(new MulAddRecFNPipe(latency, e, s))
     m.io.op := 0.U
     m.io.a := aRec
     m.io.b := bRec
@@ -206,18 +209,21 @@ private[hardfloat] object BaselineHelpers {
   // at sigWidth in {7, 8} — MulAddRecFN hits a different rounding path and
   // works. The mul-by-one is trivially optimizable in synthesis.
   def mulThenAdd(aRec: UInt, bRec: UInt, cRec: UInt,
-                 pE: Int, pS: Int, aE: Int, aS: Int): UInt = {
+                 pE: Int, pS: Int, aE: Int, aS: Int,
+                 latency: Int = 0): UInt = {
     val mul = Module(new MulRecFN(pE, pS))
     mul.io.a := aRec
     mul.io.b := bRec
     mul.io.roundingMode := consts.round_near_even
     mul.io.detectTininess := true.B
-    val widened = widenRecFN(mul.io.out, pE, pS, aE, aS)
+    val mulOut   = if (latency >= 1) RegNext(mul.io.out) else mul.io.out
+    val cDelayed = if (latency >= 1) RegNext(cRec)       else cRec
+    val widened  = widenRecFN(mulOut, pE, pS, aE, aS)
     val fma = Module(new MulAddRecFN(aE, aS))
     fma.io.op := 0.U
     fma.io.a := widened
     fma.io.b := oneRecFN(aE, aS)
-    fma.io.c := cRec
+    fma.io.c := cDelayed
     fma.io.roundingMode := consts.round_near_even
     fma.io.detectTininess := consts.tininess_afterRounding
     fma.io.out

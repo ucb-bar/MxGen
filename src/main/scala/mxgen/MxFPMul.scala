@@ -4,8 +4,10 @@ import chisel3._
 import chisel3.util._
 import mxgen.hardfloat._
 
-class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
-  println("Creating MxFpMul with product precision: " + config.productFormat + " and acc precision: " + config.accFormat)
+class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends Module {
+  require(latency == 0 || latency == 1,
+    s"MxFpMul: latency must be 0 or 1 (got $latency)")
+  println("Creating MxFpMul with product precision: " + config.productFormat + " and acc precision: " + config.accFormat + s" (latency=$latency)")
   println(config.describe)
 
   val outType1 = config.productFormat
@@ -452,14 +454,19 @@ class MxFpMul(val config: MxConfig, lut: Boolean) extends Module {
         (magSel, expSel, signSel, zeroSel)
     }
 
+    // When latency=1, register the product/exponent/metadata right before the
+    // recFN add stage. This places the pipeline boundary after the PE product
+    // (same position as MulAddRecFNPipe's register in the hardfloat datapath).
+    def dly[T <: Data](x: T): T = if (latency >= 1) RegNext(x) else x
+
     addUnits(i).io.roundingMode   := hardfloat.consts.round_near_even
     addUnits(i).io.detectTininess := hardfloat.consts.tininess_afterRounding
-    addUnits(i).io.peMag    := peMag
-    addUnits(i).io.peExp    := peExp
-    addUnits(i).io.peSign   := peSign
-    addUnits(i).io.peIsZero := peZero
-    addUnits(i).io.peIsNaN  := peIsNaN
-    addUnits(i).io.c        := recIn_c(i)
+    addUnits(i).io.peMag    := dly(peMag)
+    addUnits(i).io.peExp    := dly(peExp)
+    addUnits(i).io.peSign   := dly(peSign)
+    addUnits(i).io.peIsZero := dly(peZero)
+    addUnits(i).io.peIsNaN  := dly(peIsNaN)
+    addUnits(i).io.c        := dly(recIn_c(i))
 
     outputs(i) := addUnits(i).io.out
   }

@@ -9,8 +9,10 @@ import mxgen._
 // datapaths, each doing: recode native bits -> MulAddRecFN at accFormat.
 // Same-format only: no cross-type multiplies. type_a selects the active
 // format's outputs; lanes beyond that format's numOutputs replicate lane 0.
-class MxPerFormatFMA(val config: MxConfig) extends Module {
-  println(s"Creating MxPerFormatFMA acc=${config.accFormat}")
+class MxPerFormatFMA(val config: MxConfig, val latency: Int = 0) extends Module {
+  require(latency == 0 || latency == 1,
+    s"MxPerFormatFMA: latency must be 0 or 1 (got $latency)")
+  println(s"Creating MxPerFormatFMA (latency=$latency) acc=${config.accFormat}")
   println(config.describe)
 
   val numLanes = config.numActiveOutputLanes
@@ -70,7 +72,7 @@ class MxPerFormatFMA(val config: MxConfig) extends Module {
       val aBits = extractLane(io.in_activation, config.inActBusWidth, fmt, aIdx)
       val wBits = extractLane(io.in_weights,    config.inWeiBusWidth, fmt, wIdx)
       BaselineHelpers.mulAddRecFN(
-        convert(fmt, aBits), convert(fmt, wBits), cLanes(i), aE, aS)
+        convert(fmt, aBits), convert(fmt, wBits), cLanes(i), aE, aS, latency)
     }
     fmt -> lanes
   }
