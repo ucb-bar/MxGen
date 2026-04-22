@@ -36,10 +36,10 @@ abstract class Bf16OutHarnessBase(config: MxConfig) extends Module {
   *  - Accepts BF16 raw C (E8M7, 16b) and recodes to recFN(8,8) to drive dut.io.rec_c
   *  - Exposes dut.io.out as 4×BF16 raw packed (64b) for easy checking/printing
   */
-class MxFpMulHarnessBf16Out_NewIO(config: MxConfig, lut: Boolean)
+class MxFpMulHarnessBf16Out_NewIO(config: MxConfig, lut: Boolean, latency: Int = 0)
     extends Bf16OutHarnessBase(config) {
 
-  val dut = Module(new MxFpMul(config, lut))
+  val dut = Module(new MxFpMul(config, lut, latency = latency))
 
   val accExp    = config.accFormat.exp
   val accSig    = config.accFormat.sig

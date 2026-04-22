@@ -30,10 +30,14 @@ trait MxPETestBase extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   def weiFormats: Seq[FormatDesc]
   def sameFormatOnly: Boolean = false
   def trialsPerCombo: Int = 10
+  /** DUT pipeline latency passed to the wrapped module. 0 = combinational,
+    * 1 = one pipeline register between the product and the add stage. The
+    * test loop adds `latency` extra clock cycles after each poke. */
+  def latency: Int = 0
 
   /** DUT factory. Override to target a different harness (e.g. MxHardfloatFMA). */
   def makeHarness(config: MxConfig): Bf16OutHarnessBase =
-    new MxFpMulHarnessBf16Out_NewIO(config, lut = false)
+    new MxFpMulHarnessBf16Out_NewIO(config, lut = false, latency = latency)
 
   // ---------- small-format helpers ----------
   case class MiniFmt(eBits: Int, mBits: Int, bias: Int) {
@@ -297,7 +301,7 @@ trait MxPETestBase extends AnyFlatSpec with ChiselScalatestTester with Matchers 
             h.io.in_weights.poke(wPacked.U(wW.W))
             h.io.c_raw.poke(cRaw.U(16.W))
 
-            h.clock.step(2)
+            h.clock.step(2 + latency)
 
             val outBits = h.io.out_bf16.peek().litValue
             println(s"  out_bf16 (${4*laneW}b)      = ${binStr(outBits, 4*laneW)}")

@@ -45,3 +45,50 @@
 
 - spec: mxgen.MxHardfloatFMA_AllFormats_BF16Out_Spec
   label: HFMA — All Formats
+
+# -------- latency=1 (pipelined) variants --------
+
+- spec: mxgen.MxFpMul_FP4Only_BF16Out_Lat1_Spec
+  label: FP4 Only (lat=1)
+
+- spec: mxgen.MxFpMul_FP6E3M2Only_BF16Out_Lat1_Spec
+  label: FP6 E3M2 Only (lat=1)
+
+- spec: mxgen.MxFpMul_FP8E4M3Only_BF16Out_Lat1_Spec
+  label: FP8 E4M3 Only (lat=1)
+
+- spec: mxgen.MxFpMul_FP6_BF16Out_Lat1_Spec
+  label: FP6 (E2M3+E3M2) (lat=1)
+
+- spec: mxgen.MxFpMul_FP8_BF16Out_Lat1_Spec
+  label: FP8 (E4M3+E5M2) (lat=1)
+
+- spec: mxgen.MxFpMul_MxGemmini_BF16Out_Lat1_Spec
+  label: MxGemmini (FP4+E3M2+E4M3) (lat=1)
+
+- spec: mxgen.MxFpMul_NoCross_BF16Out_Lat1_Spec
+  label: All Formats, No Cross (lat=1)
+
+- spec: mxgen.MxHardfloatFMA_FP4Only_BF16Out_Lat1_Spec
+  label: HFMA — FP4 Only (lat=1)
+
+- spec: mxgen.MxHardfloatFMA_FP6E3M2Only_BF16Out_Lat1_Spec
+  label: HFMA — FP6 E3M2 Only (lat=1)
+
+- spec: mxgen.MxHardfloatFMA_FP8E4M3Only_BF16Out_Lat1_Spec
+  label: HFMA — FP8 E4M3 Only (lat=1)
+
+- spec: mxgen.MxHardfloatFMA_FP6_BF16Out_Lat1_Spec
+  label: HFMA — FP6 (E2M3+E3M2) (lat=1)
+
+- spec: mxgen.MxHardfloatFMA_FP8_BF16Out_Lat1_Spec
+  label: HFMA — FP8 (E4M3+E5M2) (lat=1)
+
+- spec: mxgen.MxHardfloatFMA_MxGemmini_BF16Out_Lat1_Spec
+  label: HFMA — MxGemmini (FP4+E3M2+E4M3) (lat=1)
+
+- spec: mxgen.MxHardfloatFMA_NoCross_BF16Out_Lat1_Spec
+  label: HFMA — All Formats, No Cross (lat=1)
+
+- spec: mxgen.MxHardfloatFMA_AllFormats_BF16Out_Lat1_Spec
+  label: HFMA — All Formats (lat=1)

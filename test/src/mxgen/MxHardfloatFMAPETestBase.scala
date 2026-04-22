@@ -14,5 +14,5 @@ trait MxHardfloatFMAPETestBase extends MxPETestBase {
   def uniformBF16: Boolean = true
 
   override def makeHarness(config: MxConfig): Bf16OutHarnessBase =
-    new MxHardfloatFMAHarnessBf16Out_NewIO(config, uniformBF16)
+    new MxHardfloatFMAHarnessBf16Out_NewIO(config, uniformBF16, latency = latency)
 }

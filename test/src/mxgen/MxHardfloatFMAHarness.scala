@@ -11,10 +11,11 @@ import mxgen.hardfloat.MxHardfloatFMA
   *
   * Allows the same randomized test harness (MxPETestBase) to drive either DUT.
   */
-class MxHardfloatFMAHarnessBf16Out_NewIO(config: MxConfig, uniformBF16: Boolean = true)
+class MxHardfloatFMAHarnessBf16Out_NewIO(config: MxConfig, uniformBF16: Boolean = true,
+                                         latency: Int = 0)
     extends Bf16OutHarnessBase(config) {
 
-  val dut = Module(new MxHardfloatFMA(config, uniformBF16))
+  val dut = Module(new MxHardfloatFMA(config, uniformBF16, latency = latency))
 
   val accExp    = config.accFormat.exp
   val accSig    = config.accFormat.sig
