@@ -1,17 +1,20 @@
 package mxgen
 
 import chisel3._
-import mxgen.hardfloat.MxHardfloatFMA
+import mxgen.hardfloat.{MxHardfloatFMA, MxPerFormatFMA}
 
-// Elaborates MxFpMul and/or the hardfloat baseline for a set of named configs.
+// Elaborates MxFpMul and/or hardfloat baselines for a set of named configs.
 //
 //   MxFpMul output         : generated/<name>/
 //   Hardfloat baseline out : generated/hardfloat-baseline/<name>/
+//   Per-format baseline    : generated/per-format/<name>/
 //
 // CLI:
-//   no args           -> generate both generators for every config
+//   no args           -> generate all three generators for every config
 //   mxfpmul           -> MxFpMul only
 //   hardfloat         -> hardfloat baseline only
+//   performat         -> per-format independent-datapath baseline only
+//   all / both        -> all three
 //
 // Configs available out of the box:
 //   MxConfig.fp4Only                    // smallest, FP4 only
@@ -71,6 +74,30 @@ class RegisteredMxHardfloatFMA(config: MxConfig) extends Module {
   io.out                 := RegNext(inner.io.out)
 }
 
+class RegisteredMxPerFormatFMA(config: MxConfig) extends Module {
+  val accRec   = config.accFormat.recoded
+  val numLanes = config.numActiveOutputLanes
+  val io = IO(new Bundle {
+    val in_activation = Input(UInt(config.inActBusWidth.W))
+    val type_a        = Input(new MxTypeBundle())
+    val in_weights    = Input(UInt(config.inWeiBusWidth.W))
+    val type_w        = Input(new MxTypeBundle())
+    val mode          = Input(new mxMode())
+    val enable        = Input(Bool())
+    val rec_c         = Input(UInt((numLanes * accRec).W))
+    val out           = Output(UInt((numLanes * accRec).W))
+  })
+  val inner = Module(new MxPerFormatFMA(config))
+  inner.io.in_activation := RegNext(io.in_activation)
+  inner.io.type_a        := RegNext(io.type_a)
+  inner.io.in_weights    := RegNext(io.in_weights)
+  inner.io.type_w        := RegNext(io.type_w)
+  inner.io.mode          := RegNext(io.mode)
+  inner.io.enable        := RegNext(io.enable)
+  inner.io.rec_c         := RegNext(io.rec_c)
+  io.out                 := RegNext(inner.io.out)
+}
+
 object Main extends App {
   val configs: Seq[(String, MxConfig)] = Seq(
     "fp4-only"  -> MxConfig.fp4Only,
@@ -93,10 +120,13 @@ object Main extends App {
     ),
   )
 
-  val arg = args.headOption.getOrElse("both").toLowerCase
-  val runMxFpMul  = arg == "both" || arg == "mxfpmul"
-  val runBaseline = arg == "both" || arg == "hardfloat"
-  require(runMxFpMul || runBaseline, s"Unknown argument '$arg' — expected 'mxfpmul', 'hardfloat', or 'both'")
+  val arg = args.headOption.getOrElse("all").toLowerCase
+  val runAll      = arg == "all" || arg == "both"
+  val runMxFpMul  = runAll || arg == "mxfpmul"
+  val runBaseline = runAll || arg == "hardfloat"
+  val runPerFmt   = runAll || arg == "performat"
+  require(runMxFpMul || runBaseline || runPerFmt,
+    s"Unknown argument '$arg' — expected 'mxfpmul', 'hardfloat', 'performat', or 'all'")
 
   for ((name, config) <- configs) {
     if (runMxFpMul) {
@@ -112,6 +142,13 @@ object Main extends App {
       circt.stage.ChiselStage.emitSystemVerilogFile(
         new MxHardfloatFMA(config),
         Array("--target-dir", s"generated/hardfloat-baseline/$name")
+      )
+    }
+    if (runPerFmt) {
+      println(s"=== Elaborating per-format baseline: $name ===")
+      circt.stage.ChiselStage.emitSystemVerilogFile(
+        new MxPerFormatFMA(config),
+        Array("--target-dir", s"generated/per-format/$name")
       )
     }
   }
