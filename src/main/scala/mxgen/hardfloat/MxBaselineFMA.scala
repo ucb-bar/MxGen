@@ -82,25 +82,87 @@ private[hardfloat] object BaselineHelpers {
     }
   }
 
-  // ---------- Native-format bit patterns → recFN at target format ----------
+  // ---------- MX → extended-exp IEEE intermediates ----------
+  //
+  // MX FP4/FP6 formats have no Inf/NaN — every bit pattern is a finite value.
+  // Feeding the raw bits to recFNFromFN at the native (e,s) would alias the
+  // max-exp pattern to Inf/NaN. We widen the exponent by 1 bit (mirroring the
+  // FP8 → E5M3 path used for the FP8 formats) so the rebiased MX max-exp
+  // stays strictly below the target's Inf/NaN exp. Subnormals are normalized
+  // up into the wider normal range.
 
-  // Each helper lifts the native-format bits first to recoded BF16, then
-  // resizes to the caller's desired (targetE, targetS). For BF16 targets the
-  // resize collapses to a no-op.
+  // FP4 (E2M1) → E3M1 IEEE bits (5 bits: 1 + 3 + 1)
+  def fp4ToE3M1(in: UInt): UInt = {
+    require(in.getWidth == 4)
+    val sign      = in(3)
+    val expIn     = in(2, 1)
+    val sigIn     = in(0)
+    val isZero    = (expIn === 0.U) && (sigIn === 0.U)
+    val isSubnorm = (expIn === 0.U) && (sigIn === 1.U)
+    val expNormal  = (expIn +& 2.U)(2, 0)
+    val expSubnorm = 2.U(3.W)
+    val exp = Mux(isZero, 0.U(3.W), Mux(isSubnorm, expSubnorm, expNormal))
+    val sig = Mux(isSubnorm, 0.U(1.W), sigIn)
+    sign ## exp ## sig
+  }
+
+  // FP6 E2M3 → E4M3 IEEE bits (8 bits: 1 + 4 + 3).
+  // Uses E4M3 (not E3M3) because E3M3's min normal (2^-2) can't absorb
+  // FP6_E2M3's smallest subnormal (2^-3); E4M3's min normal is 2^-6.
+  def fp6E2M3ToE4M3(in: UInt): UInt = {
+    require(in.getWidth == 6)
+    val sign      = in(5)
+    val expIn     = in(4, 3)
+    val sigIn     = in(2, 0)
+    val isZero    = (expIn === 0.U) && (sigIn === 0.U)
+    val isSubnorm = (expIn === 0.U) && (sigIn =/= 0.U)
+    val expNormal  = (expIn +& 6.U)(3, 0)
+    val lead       = PriorityEncoder(Reverse(sigIn))
+    val shift      = lead +& 1.U
+    val shiftedSig = (sigIn << shift)(2, 0)
+    val expSubnorm = (7.U(4.W) -& shift)(3, 0)
+    val exp = Mux(isZero, 0.U(4.W), Mux(isSubnorm, expSubnorm, expNormal))
+    val sig = Mux(isSubnorm, shiftedSig, sigIn)
+    sign ## exp ## sig
+  }
+
+  // FP6 E3M2 → E4M3 IEEE bits (8 bits: 1 + 4 + 3)
+  def fp6E3M2ToE4M3(in: UInt): UInt = {
+    require(in.getWidth == 6)
+    val sign      = in(5)
+    val expIn     = in(4, 2)
+    val sigIn     = in(1, 0)
+    val isZero    = (expIn === 0.U) && (sigIn === 0.U)
+    val isSubnorm = (expIn === 0.U) && (sigIn =/= 0.U)
+    val expNormal  = (expIn +& 4.U)(3, 0)
+    val lead       = PriorityEncoder(Reverse(sigIn))
+    val shift      = lead +& 1.U
+    val shiftedSig = (sigIn << shift)(1, 0)
+    val expSubnorm = (5.U(4.W) -& shift)(3, 0)
+    val exp = Mux(isZero, 0.U(4.W), Mux(isSubnorm, expSubnorm, expNormal))
+    val sigNormal  = sigIn       ## 0.U(1.W)
+    val sigSubnorm = shiftedSig  ## 0.U(1.W)
+    val sig = Mux(isSubnorm, sigSubnorm, sigNormal)
+    sign ## exp ## sig
+  }
+
+  // ---------- Native-format bit patterns → recFN at target format ----------
+  //
+  // Uniform pattern: native MX bits → extended-exp IEEE → recFNFromFN → widen.
 
   def fp4ToRec(in: UInt, targetE: Int, targetS: Int): UInt = {
-    val bf16 = fp4ToBf16(in)
-    widenRecFN(recFNFromFN(8, 8, bf16), 8, 8, targetE, targetS)
+    val e3m1 = fp4ToE3M1(in)
+    widenRecFN(recFNFromFN(3, 2, e3m1), 3, 2, targetE, targetS)
   }
 
   def fp6E2M3ToRec(in: UInt, targetE: Int, targetS: Int): UInt = {
-    val bf16 = fp6E2M3ToBf16(in)
-    widenRecFN(recFNFromFN(8, 8, bf16), 8, 8, targetE, targetS)
+    val e4m3 = fp6E2M3ToE4M3(in)
+    widenRecFN(recFNFromFN(4, 4, e4m3), 4, 4, targetE, targetS)
   }
 
   def fp6E3M2ToRec(in: UInt, targetE: Int, targetS: Int): UInt = {
-    val rec33 = recFNFromFN(3, 3, in)
-    widenRecFN(rec33, 3, 3, targetE, targetS)
+    val e4m3 = fp6E3M2ToE4M3(in)
+    widenRecFN(recFNFromFN(4, 4, e4m3), 4, 4, targetE, targetS)
   }
 
   def fp8E4M3ToRec(in: UInt, targetE: Int, targetS: Int): UInt = {
