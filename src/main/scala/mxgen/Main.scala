@@ -3,29 +3,8 @@ package mxgen
 import chisel3._
 import mxgen.hardfloat.{MxHardfloatFMA, MxPerFormatFMA}
 
-// Elaborates MxFpMul and/or hardfloat baselines for a set of named configs.
-//
-//   MxFpMul output         : generated/<name>/
-//   Hardfloat baseline out : generated/hardfloat-baseline/<name>/
-//   Per-format baseline    : generated/per-format/<name>/
-//
-// CLI:
-//   first positional  -> which generator(s): mxfpmul | hardfloat | performat | all
-//                        (default: all)
-//   latency=<0|1>     -> optional flag; adds one pipeline register between
-//                        product and add when =1. Default: 0 (combinational).
-//
-// Configs available out of the box:
-//   MxConfig.fp4Only                    // smallest, FP4 only
-//   MxConfig.fp6 / fp8                  // FP6 or FP8 format families
-//   MxConfig.mxGemmini                  // FP4/FP6_E3M2/FP8_E4M3, same-format only
-//   MxConfig.all                        // every format combo (cross products)
-//   MxConfig(actFormats, weiFormats)    // custom format sets
-
-// Thin wrapper that adds input + output pipeline registers around a PE.
-// `latency` is forwarded to the inner module: 0 keeps it combinational
-// (input + output regs only), 1 adds one inner pipeline register between
-// the product and the add stage of the FMA datapath.
+// Input+output register wrapper. `latency=1` forwards to the inner module and
+// adds one pipeline register between the product and add stage.
 class RegisteredMxFpMul(config: MxConfig, latency: Int = 0) extends Module {
   val accRec   = config.accFormat.recoded
   val numLanes = config.numActiveOutputLanes
@@ -107,9 +86,7 @@ object Main extends App {
     "fp8"       -> MxConfig.fp8,
     "mxgemmini" -> MxConfig.mxGemmini,
     "all"       -> MxConfig.all,
-    // Every format supported on both sides, but PE modes restricted to the
-    // same-format pairs (FP4×FP4, FP6_E3M2×FP6_E3M2 / FP8_E5M2×FP8_E5M2,
-    // FP6_E2M3×FP6_E2M3 / FP8_E4M3×FP8_E4M3). No cross-format multiplies.
+    // All formats on both sides, but PE modes restricted to same-format pairs only.
     "no-cross"  -> MxConfig(
       actFormats     = MxFormat.all,
       weiFormats     = MxFormat.all,

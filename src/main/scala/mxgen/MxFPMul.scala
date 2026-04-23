@@ -94,20 +94,9 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
     }
   }
 
-  // Shared classify+pack for one operand element. Replaces the per-format
-  // cones (one `classify` + one `pack` per format, all muxed after the fact)
-  // with a single pipeline where all per-format combinational work is done
-  // inside one helper, then Mux1H'd on the runtime-selected format. Since
-  // formats sharing a sigWidth also share raw-sig bit positions (E3M2/E5M2;
-  // E2M3/E4M3), CIRCT collapses the duplicated rawSig cones into one.
-  //
-  // Exp packing: the original pack() does
-  //     packed_exp = c.exp.asSInt               // f.expWidth-bit SInt
-  //     slot       = packed_exp.pad(slotExpWidth).asUInt
-  // i.e. SIGN-extend the biased-exp bit pattern up to the slot width, not
-  // zero-extend. MxExp re-reads the slot via `slot(w-1,0).asSInt`, so the
-  // two-s-complement sign bit matters all the way up to w=expAdderWidths(i).
-  private def classifyAndPackSlot(
+  // Shared classify+pack: per-format cones in parallel, Mux1H'd on runtime format.
+  // Exp is sign-extended into the slot — MxExp re-reads it as SInt.
+  def classifyAndPackSlot(
     lane:         UInt,
     typeBundle:   MxTypeBundle,
     formats:      Seq[MxFormat],
@@ -175,19 +164,8 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
   val nanA = WireDefault(false.B)
   val nanW = WireDefault(false.B)
 
-  // ---------------------------------------------------------------------------
-  // Classify input lanes.
-  //
-  // Formats split into two packing paths by sigWidth:
-  //   * sig < 4  -> "dual"   : two elements packed into lanes2_{a,w}.
-  //   * sig >= 4 -> "single" : one element filling lanes1_{a,w}; sign/mask
-  //                            are broadcast to both product positions.
-  //
-  // Within each path we run one `classifyAndPackSlot` per element slot and
-  // share the raw-field mux / isZero-isSub / bias subtract across all formats
-  // that use that slot. When both paths are present for a side, the two
-  // results are muxed by the top sig bit (sig === 4 picks the single path).
-  // ---------------------------------------------------------------------------
+  // Classify input lanes: dual (sig<4, two elements/pair) vs single (sig>=4,
+  // broadcast sign/mask). Top sig bit picks between paths at runtime.
   val dualActFormats   = config.actFormats.filter(_.sigWidth < 4).toSeq.sortBy(_.bitWidth)
   val singleActFormats = config.actFormats.filter(_.sigWidth >= 4).toSeq.sortBy(_.bitWidth)
   val dualWeiFormats   = config.weiFormats.filter(_.sigWidth < 4).toSeq.sortBy(_.bitWidth)
@@ -328,30 +306,16 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
   expAdder.io.in_w := inW_exp
   out_e := expAdder.io.out_exp
 
-  // ---------------------------------------------------------------------------
-  // PE product → MxPEAddRecFN path.
-  //
-  // The PE emits an unsigned integer product per lane. Previously MxFpMul ran
-  // a `normalize` CLZ on it and then `MxPEOutToRaw` did a second CLZ for the
-  // subnormal case, just to reconstruct a RawFloat that was immediately
-  // unpacked by MxMulAddRecFN. Both CLZes are redundant — the hardfloat
-  // postMul already has a CLZ over a 2*sigWidth+3-bit absSigSum that's wide
-  // enough to absorb an unnormalized product.
-  //
-  // Here we slice the raw peMag from out_pe per output mode, MSB-align it to
-  // sigWidth bits, and feed (peMag, peExp, peSign, peIsZero, peIsNaN, rec_c)
-  // straight into MxPEAddRecFN.
-  // ---------------------------------------------------------------------------
+  // PE product → MxPEAddRecFN: slice raw peMag per output mode, MSB-align to
+  // sigWidth, and feed straight in. The postMul CLZ absorbs non-normalization.
   val productFmt  = config.productFormat
   val outSig      = productFmt.sig
   val outExp      = productFmt.exp
   val outBias     = productFmt.bias
   val laneExpWidth = outExp + 1
 
-  // Select peMag width options for an output-mode based on which (actSig,
-  // weiSig) pairs the configured modes actually produce. Builds an
-  // MSB-aligned sigWidth-bit peMag from the raw out_pe slice. The runtime
-  // mux on actType.sig/weiType.sig picks the right width.
+  // Build an MSB-aligned sigWidth-bit peMag from the raw out_pe slice; runtime
+  // mux on actType.sig/weiType.sig picks the width that matches the mode.
   def peMagOut4(laneIdx: Int): UInt = {
     val laneW = config.outPE_width / 4
     val base  = laneIdx * laneW
@@ -454,10 +418,8 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
         (magSel, expSel, signSel, zeroSel)
     }
 
-    // The pipeline register for latency=1 lives inside MxPEAddRecFN, at the
-    // mulAddResult boundary — same split as stock hardfloat MulAddRecFNPipe.
-    // Stage 1 = PE + MxExp + rawC decode + c-alignment + product-sum;
-    // Stage 2 = CLZ + normalize + round.
+    // latency=1 pipeline reg lives at mulAddResult inside MxPEAddRecFN
+    // (same split as stock MulAddRecFNPipe: product-sum | CLZ+norm+round).
     addUnits(i).io.roundingMode   := hardfloat.consts.round_near_even
     addUnits(i).io.detectTininess := hardfloat.consts.tininess_afterRounding
     addUnits(i).io.peMag    := peMag

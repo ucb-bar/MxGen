@@ -4,10 +4,7 @@ import chisel3._
 import chisel3.util._
 import chisel3.experimental.BundleLiterals._
 
-// -----------------------------------------------------------------------------
 // NAMED MX FORMATS (user-facing enum of supported floating-point formats)
-// -----------------------------------------------------------------------------
-
 sealed trait MxFormat {
   def expWidth: Int
   def sigWidth: Int
@@ -144,17 +141,8 @@ object MxPEParams {
     forSigWidths(act.sigWidth, wei.sigWidth)
 }
 
-// -----------------------------------------------------------------------------
-// TOP-LEVEL CONFIG
-//
-// `MxConfig` is the single user-facing configuration for MxPE and MxFpMul.
-// It specifies which activation and weight formats are supported, and from
-// those derives the PE mode slots and all hardware-level parameters.
-//
-// Bus widths, exp-adder widths, and per-lane PE output widths can all be
-// overridden; any field left at its default is derived from the format sets.
-// -----------------------------------------------------------------------------
-
+// TOP-LEVEL CONFIG — user-facing config for MxPE and MxFpMul.
+// Bus/adder/lane widths default from the format sets but can be overridden.
 case class MxConfig (
   actFormats:       Set[MxFormat]              = Set(MxFormat.FP4),
   weiFormats:       Set[MxFormat]              = Set(MxFormat.FP4),
@@ -175,9 +163,7 @@ case class MxConfig (
   require(inWeiBusWidth >= MxConfig.minBusWidth(weiFormats),
     s"MxConfig: inWeiBusWidth=$inWeiBusWidth too narrow for weiFormats (need >= ${MxConfig.minBusWidth(weiFormats)})")
 
-  // PE mode slots: either explicitly overridden or derived from the cartesian
-  // product of actFormats x weiFormats. Use `modesOverride` when you need
-  // exact control (e.g. only same-format pairs, not all cross-format combos).
+  // PE mode slots: modesOverride, or cartesian product of actFormats×weiFormats.
   val modesSupported: List[MxPEParams] = modesOverride.getOrElse((for {
     a <- actFormats.toSeq
     w <- weiFormats.toSeq
@@ -205,11 +191,8 @@ case class MxConfig (
     )) 5
     else 4
 
-  // ---------------------------------------------------------------------------
-  // Elaboration-time gating flags — derived from modesSupported.
-  // These allow MxPE and MxFpMul to skip generating hardware that is
-  // unreachable for the configured set of formats/modes.
-  // ---------------------------------------------------------------------------
+  // Elaboration-time gating flags — let MxPE/MxFpMul skip hardware that is
+  // unreachable for the configured format/mode set.
   val numOutputsValues: Set[Int] = modesSupported.map(_.numOutputs).toSet
   val fixedNumOutputs: Option[Int] = if (numOutputsValues.size == 1) Some(numOutputsValues.head) else None
   val needsOut1: Boolean = numOutputsValues.contains(1)
@@ -278,9 +261,7 @@ case class MxConfig (
 }
 
 object MxConfig {
-  /** Minimum bus width needed for a set of formats.
-    * Dual-lane formats (sigWidth < 4) need 2 × bitWidth;
-    * single-lane formats (sigWidth >= 4) need 1 × bitWidth.  */
+  /** Min bus width for a set of formats: sig<4 needs 2×bitWidth, else 1×. */
   def minBusWidth(formats: Set[MxFormat]): Int = formats.map { f =>
     if (f.sigWidth >= 4) f.bitWidth else f.bitWidth * 2
   }.max
@@ -306,10 +287,7 @@ object MxConfig {
   )
 }
 
-// -----------------------------------------------------------------------------
 // MX FLOAT BUNDLE
-// -----------------------------------------------------------------------------
-
 case class MxFloat(format: MxFormat, count: Int, isRecoded: Boolean = false, pad: Boolean = true) extends Bundle {
   val expWidth: Int = format.expWidth
   val sigWidth: Int = format.sigWidth

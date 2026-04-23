@@ -4,11 +4,8 @@ import chisel3._
 import chisel3.util._
 import mxgen._
 
-// Per-format independent-datapath baseline. For each format in
-// actFormats ∩ weiFormats we instantiate N = numOutputs_of(same-format mode)
-// datapaths, each doing: recode native bits -> MulAddRecFN at accFormat.
-// Same-format only: no cross-type multiplies. type_a selects the active
-// format's outputs; lanes beyond that format's numOutputs replicate lane 0.
+// Per-format independent-datapath baseline (same-format only). One Mul+Add
+// stack per format in actFormats∩weiFormats; type_a picks the active output.
 class MxPerFormatFMA(val config: MxConfig, val latency: Int = 0) extends Module {
   require(latency == 0 || latency == 1,
     s"MxPerFormatFMA: latency must be 0 or 1 (got $latency)")
@@ -58,8 +55,6 @@ class MxPerFormatFMA(val config: MxConfig, val latency: Int = 0) extends Module 
   val cLanes = io.rec_c.asTypeOf(Vec(numLanes, UInt(accRec.W)))
 
   // Per-format output lane vectors. Count = numOutputs of the (fmt, fmt) mode.
-  //   mode0 / mode4 (sig 2/2 or 3/3): numOutputs=4, outer product a[i>>1]×w[i&1]
-  //   mode8        (sig 4/4)        : numOutputs=1, a[0]×w[0]
   val fmtOutputs: Seq[(MxFormat, Seq[UInt])] = fmts.map { fmt =>
     val m = MxPEParams.forFormatCombo(fmt, fmt)
     val n = m.numOutputs

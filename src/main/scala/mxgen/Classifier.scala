@@ -4,10 +4,7 @@ import chisel3._
 import chisel3.util._
 import chisel3.experimental.BundleLiterals._
 
-// -----------------------------------------------------------------------------
 // BUNDLES AND DECODING
-// -----------------------------------------------------------------------------
-
 class mxMode extends Bundle {
   val actWidth = UInt(3.W)
   val weiWidth = UInt(3.W) 
@@ -22,10 +19,7 @@ class MxTypeBundle extends Bundle {
   val sig = UInt(3.W)
 }
 
-// -----------------------------------------------------------------------------
 // MODE DECODER
-// -----------------------------------------------------------------------------
-
 object mxModeDecode {
   def litTable = VecInit(MxPEParams.allModes.map { m =>
     (new mxMode).Lit(

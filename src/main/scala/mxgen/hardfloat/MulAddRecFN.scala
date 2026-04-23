@@ -346,10 +346,8 @@ class MulAddRecFN(expWidth: Int, sigWidth: Int) extends RawModule
     io.exceptionFlags := roundRawFNToRecFN.io.exceptionFlags
 }
 
-// Pipelined MulAddRecFN with a configurable pipeline register between the
-// pre-mul stage (including the integer product mulAddA*mulAddB + mulAddC) and
-// the post-mul stage. latency=0 is combinational (same output as MulAddRecFN);
-// latency=1 inserts one stage of registers right after the product.
+// Pipelined MulAddRecFN: optional register between pre-mul (product) and post-mul.
+// latency=0 is combinational; latency=1 inserts one stage after the product.
 class MulAddRecFNPipe(val latency: Int, expWidth: Int, sigWidth: Int) extends Module
 {
     require(latency == 0 || latency == 1,

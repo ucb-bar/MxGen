@@ -4,23 +4,8 @@ import chisel3._
 import chisel3.util._
 import mxgen.hardfloat._
 
-// MxMulAddRecFN — "multiply-add" with the multiply operand pinned to the
-// synthetic value 1.0, so the result is simply rawA + rec_c. We reuse
-// hardfloat's MulAddRecFN postMul (rather than AddRecFN) because AddRawFN's
-// alignment range is capped at sigWidth bits, whereas the FMA preMul aligns
-// across the full (sigWidth*3+3) sigSumWidth — required when rawA and rec_c
-// differ by more than sigWidth in exponent (e.g. accumulating a BF16
-// subnormal into a product).
-//
-// rawA arrives as a RawFloat directly (not recFN-encoded). It may be at a
-// narrower product format (aE<=expWidth, aS<=sigWidth); we widen inline by:
-//   sExpAligned  = rawA.sExp + (2^expWidth - 2^aE) + sigWidth + 3
-//   mulAddA_sig  = rawA.sig << (sigWidth - aS)     (leading 1 at bit sigWidth-1)
-// and feed the alignment logic directly — bypassing the redundant
-// rawFloatFromRecFN decode that stock MulAddRecFNToRaw_preMul would perform
-// on a recFN-encoded rawA. rawB is pinned (signB=0, isZeroB=false,
-// isInfB=false, sExpB=2^expWidth, sigB=1<<(sigWidth-1)) so signProd=rawA.sign
-// and mulAddA*mulAddB collapses to a shift — no multiplier is synthesized.
+// MxMulAddRecFN — MulAdd with rawB pinned to 1.0 (result = rawA + rec_c),
+// using the FMA preMul. rawA is a RawFloat at (aE,aS) ≤ (expWidth,sigWidth).
 class MxMulAddRecFN(expWidth: Int, sigWidth: Int,
                     aExpWidth: Int = -1, aSigWidth: Int = -1) extends RawModule
 {
@@ -47,8 +32,7 @@ class MxMulAddRecFN(expWidth: Int, sigWidth: Int,
 
     val rawC = rawFloatFromRecFN(expWidth, sigWidth, io.c)
 
-    // Inline specialization of MulAddRecFNToRaw_preMul with b=1.0 pinned and
-    // rawA wired directly (no recFN roundtrip). sExpAlignedProd absorbs the
+    // Inline MulAddRecFNToRaw_preMul with b=1.0; sExpAlignedProd absorbs the
     // rawA→acc bias shift into the usual +sigWidth+3 offset.
     val sigSumWidth = sigWidth * 3 + 3
 

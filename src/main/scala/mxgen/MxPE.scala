@@ -113,10 +113,8 @@ class MxPE(config: MxConfig, lut: Boolean) extends Module {
     }
   }
 
-  // In the 4-output case each of the 4 MACU results lands on its own output
-  // lane. By default every lane uses the same `multOutWidth` bits (packed
-  // back-to-back), but when `MxConfig.laneOutputWidths` is set each MACU
-  // output is zero-padded to its per-lane width before concatenation.
+  // 4-output mode: each MACU result lands on its own lane, zero-padded to
+  // `laneOutputWidths` if set, otherwise packed at `multOutWidth`.
   val out4Packed: UInt = if (config.laneOutputWidths.isDefined) {
     VecInit((0 until 4).map(i => outFM(i).pad(config.laneWidths(i)))).asUInt
   } else {
@@ -125,8 +123,7 @@ class MxPE(config: MxConfig, lut: Boolean) extends Module {
 
   // --- Output routing (gated by needsOut1/needsOut2/needsOut4) ---
   if (config.inPE_act_width == 4 || config.inPE_wei_width == 4) {
-    // Shift-and-add paths are only needed for 1-output or 2-output modes.
-    // When all configured modes have 4 outputs, skip entirely.
+    // Shift-and-add paths only needed for 1- or 2-output modes.
     if (config.needsOut1 || config.needsOut2) {
       val outShift0 = outFM(3) << io.modeDecoded.shift(0)(0)
       val outShift1 = outFM(2) << io.modeDecoded.shift(0)(1)

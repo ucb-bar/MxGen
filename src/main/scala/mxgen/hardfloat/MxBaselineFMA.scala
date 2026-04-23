@@ -5,32 +5,8 @@ import chisel3.util._
 import mxgen.hardfloatHelper
 import mxgen.MxFormat
 
-// -----------------------------------------------------------------------------
-// Baseline hardfloat FMA modules for area comparison against MxFpMul.
-//
-// Two flavors per format:
-//   - `*MulAddBF16`              — main baseline: a single MulAddRecFN(8,8)
-//                                   (true fused multiply-add at BF16).
-//   - `*MulAdd(productFmt,acc)`  — parametric precision: MulRecFN at product
-//                                   precision, widen, then AddRecFN at acc
-//                                   precision. Two rounding steps, but product
-//                                   and accumulator widths are independent.
-//
-// Each module performs `numLanes` parallel (a * b + c) operations, with
-// `a_bits`/`b_bits` carrying the format's native packed bits and `c_rec` /
-// `out_rec` carrying recoded values at the accumulation format.
-//
-// Design notes:
-//  - "each type has its own datapath" — per-format conversion hardware is
-//    generated only for the formats actually requested; each module stands on
-//    its own and can be instantiated individually.
-//  - "not fused" — nothing is shared across formats inside a given per-format
-//    module; a format-specific converter feeds its own multiplier/adder.
-//  - "don't over-instantiate" — the top-level `MxHardfloatFMA` wrapper picks
-//    an instantiation strategy based on the MxConfig so that narrower formats
-//    reuse the widest format's arithmetic units (size = numActiveOutputLanes).
-// -----------------------------------------------------------------------------
-
+// Baseline hardfloat FMA modules (BF16 and parametric-precision variants)
+// for area comparison against MxFpMul. Each runs numLanes parallel a*b+c.
 private[hardfloat] object BaselineHelpers {
   // ---------- Native-format bit patterns → BF16 bits ----------
 
@@ -82,14 +58,8 @@ private[hardfloat] object BaselineHelpers {
     }
   }
 
-  // ---------- MX → extended-exp IEEE intermediates ----------
-  //
-  // MX FP4/FP6 formats have no Inf/NaN — every bit pattern is a finite value.
-  // Feeding the raw bits to recFNFromFN at the native (e,s) would alias the
-  // max-exp pattern to Inf/NaN. We widen the exponent by 1 bit (mirroring the
-  // FP8 → E5M3 path used for the FP8 formats) so the rebiased MX max-exp
-  // stays strictly below the target's Inf/NaN exp. Subnormals are normalized
-  // up into the wider normal range.
+  // MX → extended-exp IEEE intermediates: MX FP4/FP6 have no Inf/NaN, so we
+  // widen exp by 1 bit to avoid aliasing max-exp to Inf/NaN after rebias.
 
   // FP4 (E2M1) → E3M1 IEEE bits (5 bits: 1 + 3 + 1)
   def fp4ToE3M1(in: UInt): UInt = {
@@ -106,9 +76,7 @@ private[hardfloat] object BaselineHelpers {
     sign ## exp ## sig
   }
 
-  // FP6 E2M3 → E4M3 IEEE bits (8 bits: 1 + 4 + 3).
-  // Uses E4M3 (not E3M3) because E3M3's min normal (2^-2) can't absorb
-  // FP6_E2M3's smallest subnormal (2^-3); E4M3's min normal is 2^-6.
+  // FP6 E2M3 → E4M3: need E4M3 (not E3M3) to absorb FP6_E2M3's min subnormal 2^-3.
   def fp6E2M3ToE4M3(in: UInt): UInt = {
     require(in.getWidth == 6)
     val sign      = in(5)
@@ -146,10 +114,7 @@ private[hardfloat] object BaselineHelpers {
     sign ## exp ## sig
   }
 
-  // ---------- Native-format bit patterns → recFN at target format ----------
-  //
-  // Uniform pattern: native MX bits → extended-exp IEEE → recFNFromFN → widen.
-
+  // Native MX bits → extended-exp IEEE → recFNFromFN → widen.
   def fp4ToRec(in: UInt, targetE: Int, targetS: Int): UInt = {
     val e3m1 = fp4ToE3M1(in)
     widenRecFN(recFNFromFN(3, 2, e3m1), 3, 2, targetE, targetS)
@@ -179,9 +144,7 @@ private[hardfloat] object BaselineHelpers {
 
   // ---------- Arithmetic primitives ----------
 
-  // Fused multiply-add at a single (expWidth, sigWidth). When latency>=1 the
-  // inner pipelined variant drops one register between the product and the
-  // post-mul/round stage.
+  // Fused MA at (e, s). latency>=1 adds a product/post-mul pipeline register.
   def mulAddRecFN(aRec: UInt, bRec: UInt, cRec: UInt, e: Int, s: Int,
                   latency: Int = 0): UInt = {
     val m = Module(new MulAddRecFNPipe(latency, e, s))
@@ -201,13 +164,8 @@ private[hardfloat] object BaselineHelpers {
     recFNFromFN(e, s, fnOne)
   }
 
-  // Multiply at product precision, widen, add at acc precision.
-  //
-  // Adds are done via MulAddRecFN(aE, aS) with b = 1.0 so we compute
-  // `widened * 1.0 + c`. Using a standalone AddRecFN here would be the natural
-  // choice, but this hardfloat copy's AddRecFN has a corner-case bit-range bug
-  // at sigWidth in {7, 8} — MulAddRecFN hits a different rounding path and
-  // works. The mul-by-one is trivially optimizable in synthesis.
+  // Multiply at product precision, widen, add at acc precision. The add is
+  // done as MulAdd(widened, 1.0, c) — avoids an AddRecFN bit-range bug at sig∈{7,8}.
   def mulThenAdd(aRec: UInt, bRec: UInt, cRec: UInt,
                  pE: Int, pS: Int, aE: Int, aS: Int,
                  latency: Int = 0): UInt = {
@@ -230,10 +188,7 @@ private[hardfloat] object BaselineHelpers {
   }
 }
 
-// -----------------------------------------------------------------------------
 // Per-format BF16 baseline FMAs. True fused multiply-add, a*b+c, all at BF16.
-// -----------------------------------------------------------------------------
-
 abstract class PerFormatFMABF16 extends Module {
   def numLanes: Int
   def fmtBits: Int
@@ -283,16 +238,8 @@ class FP8E5M2MulAddBF16(val numLanes: Int) extends PerFormatFMABF16 {
   def convert(bits: UInt) = BaselineHelpers.fp8E5M2ToRec(bits, 8, 8)
 }
 
-// -----------------------------------------------------------------------------
-// Per-format parametric-precision FMAs.
-//
-// productFormat controls the multiplier width; accFormat controls the
-// accumulator width. They may differ — the product is widened/narrowed to the
-// accumulation format between the Mul and Add stages. This is not a single
-// fused multiply-add (two round steps), but it lets us bound multiplier area
-// independently of accumulator precision.
-// -----------------------------------------------------------------------------
-
+// Per-format parametric-precision FMAs: productFormat sets multiplier width,
+// accFormat sets accumulator width; product is widened/narrowed between stages.
 abstract class PerFormatFMA extends Module {
   def numLanes:      Int
   def fmtBits:       Int
