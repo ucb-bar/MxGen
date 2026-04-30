@@ -110,15 +110,20 @@ object Main extends App {
   require(runMxFpMul || runBaseline || runPerFmt,
     s"Unknown argument '$arg' — expected 'mxfpmul', 'hardfloat', 'performat', or 'all'")
 
-  val latency = flags.get("latency").map(_.toInt).getOrElse(0)
-  require(latency == 0 || latency == 1,
-    s"latency must be 0 or 1 (got $latency)")
-  val latencyDir = if (latency == 0) "" else s"-lat$latency"
+  // latency=N picks one specific pipeline depth; omit to generate all of 0/1/2.
+  val latencies: Seq[Int] = flags.get("latency") match {
+    case Some(s) =>
+      val n = s.toInt
+      require(n >= 0 && n <= 2, s"latency must be 0, 1, or 2 (got $n)")
+      Seq(n)
+    case None => Seq(0, 1, 2)
+  }
+  def latencyDir(l: Int): String = if (l == 0) "" else s"-lat$l"
 
   // tb=0 disables emission of per-DUT Verilog testbenches (default: on).
   val runTB = flags.get("tb").map(_.toInt).getOrElse(1) != 0
 
-  println(s"=== Elaboration latency=$latency tb=$runTB ===")
+  println(s"=== Elaboration latencies=${latencies.mkString(",")} tb=$runTB ===")
 
   // Sanitize a config label so it can be embedded in a Verilog identifier.
   def safeIdent(s: String): String = s.replaceAll("[^A-Za-z0-9_]", "_")
@@ -128,11 +133,12 @@ object Main extends App {
     config:         MxConfig,
     kind:           MxPEDutKind,
     targetDir:      String,
-    sameFormatOnly: Boolean
+    sameFormatOnly: Boolean,
+    latency:        Int
   ): Unit = {
     val vectors = MxPETBVectors.generate(config, sameFormatOnly = sameFormatOnly)
     val tbName  = s"MxPEVerilogTB_${kind.label.replace('-', '_')}_${safeIdent(name)}" +
-                  (if (latency == 0) "" else "_lat1")
+                  (if (latency == 0) "" else s"_lat$latency")
     println(s"=== Elaborating testbench: $tbName (${vectors.length} vectors) ===")
     circt.stage.ChiselStage.emitSystemVerilogFile(
       new MxPEVerilogTB(config, kind, vectors, latency = latency, desiredName = tbName),
@@ -140,34 +146,34 @@ object Main extends App {
     )
   }
 
-  for ((name, config) <- configs) {
+  for (latency <- latencies; (name, config) <- configs) {
     if (runMxFpMul) {
       println(s"=== Elaborating MxFpMul: $name (latency=$latency) ===")
       println(config.describe)
-      val dir = s"generated$latencyDir/$name"
+      val dir = s"generated${latencyDir(latency)}/$name"
       circt.stage.ChiselStage.emitSystemVerilogFile(
         new MxFpMul(config, lut = false, latency = latency),
         Array("--target-dir", dir)
       )
-      if (runTB) emitTB(name, config, MxPEDutKind.MxFpMulDut(lut = false), dir, sameFormatOnly = false)
+      if (runTB) emitTB(name, config, MxPEDutKind.MxFpMulDut(lut = false), dir, sameFormatOnly = false, latency)
     }
     if (runBaseline) {
       println(s"=== Elaborating hardfloat baseline: $name (latency=$latency) ===")
-      val dir = s"generated$latencyDir/hardfloat-baseline/$name"
+      val dir = s"generated${latencyDir(latency)}/hardfloat-baseline/$name"
       circt.stage.ChiselStage.emitSystemVerilogFile(
         new MxHardfloatFMA(config, latency = latency),
         Array("--target-dir", dir)
       )
-      if (runTB) emitTB(name, config, MxPEDutKind.HardfloatFMADut, dir, sameFormatOnly = false)
+      if (runTB) emitTB(name, config, MxPEDutKind.HardfloatFMADut, dir, sameFormatOnly = false, latency)
     }
     if (runPerFmt) {
       println(s"=== Elaborating per-format baseline: $name (latency=$latency) ===")
-      val dir = s"generated$latencyDir/per-format/$name"
+      val dir = s"generated${latencyDir(latency)}/per-format/$name"
       circt.stage.ChiselStage.emitSystemVerilogFile(
         new MxPerFormatFMA(config, latency = latency),
         Array("--target-dir", dir)
       )
-      if (runTB) emitTB(name, config, MxPEDutKind.PerFormatFMADut, dir, sameFormatOnly = true)
+      if (runTB) emitTB(name, config, MxPEDutKind.PerFormatFMADut, dir, sameFormatOnly = true, latency)
     }
   }
 }

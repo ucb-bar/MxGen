@@ -7,8 +7,8 @@ import mxgen._
 // Per-format independent-datapath baseline (same-format only). One Mul+Add
 // stack per format in actFormats∩weiFormats; type_a picks the active output.
 class MxPerFormatFMA(val config: MxConfig, val latency: Int = 0) extends Module {
-  require(latency == 0 || latency == 1,
-    s"MxPerFormatFMA: latency must be 0 or 1 (got $latency)")
+  require(latency >= 0 && latency <= 2,
+    s"MxPerFormatFMA: latency must be 0, 1, or 2 (got $latency)")
   println(s"Creating MxPerFormatFMA (latency=$latency) acc=${config.accFormat}")
   println(config.describe)
 

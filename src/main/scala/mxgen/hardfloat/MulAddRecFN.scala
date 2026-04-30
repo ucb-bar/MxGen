@@ -346,12 +346,13 @@ class MulAddRecFN(expWidth: Int, sigWidth: Int) extends RawModule
     io.exceptionFlags := roundRawFNToRecFN.io.exceptionFlags
 }
 
-// Pipelined MulAddRecFN: optional register between pre-mul (product) and post-mul.
-// latency=0 is combinational; latency=1 inserts one stage after the product.
+// Pipelined MulAddRecFN. latency=0: combinational. latency=1: register between
+// pre-mul (product) and post-mul. latency=2: additional register between post-mul
+// and round. Register placement matches the rocket-chip MulAddRecFNPipe reference.
 class MulAddRecFNPipe(val latency: Int, expWidth: Int, sigWidth: Int) extends Module
 {
-    require(latency == 0 || latency == 1,
-        s"MulAddRecFNPipe: latency must be 0 or 1 (got $latency)")
+    require(latency >= 0 && latency <= 2,
+        s"MulAddRecFNPipe: latency must be 0, 1, or 2 (got $latency)")
     override def desiredName = s"MulAddRecFNPipe_l${latency}_e${expWidth}_s${sigWidth}"
     val io = IO(new Bundle {
         val op = Input(Bits(2.W))
@@ -364,6 +365,9 @@ class MulAddRecFNPipe(val latency: Int, expWidth: Int, sigWidth: Int) extends Mo
         val exceptionFlags = Output(Bits(5.W))
     })
 
+    val postmulRegs = if (latency >= 1) 1 else 0
+    val roundRegs   = if (latency >= 2) 1 else 0
+
     val preMul = Module(new MulAddRecFNToRaw_preMul(expWidth, sigWidth))
     preMul.io.op := io.op
     preMul.io.a  := io.a
@@ -373,10 +377,13 @@ class MulAddRecFNPipe(val latency: Int, expWidth: Int, sigWidth: Int) extends Mo
     val mulAddResult =
         (preMul.io.mulAddA * preMul.io.mulAddB) +& preMul.io.mulAddC
 
-    val toPostMul_s1  = if (latency >= 1) RegNext(preMul.io.toPostMul) else preMul.io.toPostMul
-    val mulAddRes_s1  = if (latency >= 1) RegNext(mulAddResult)        else mulAddResult
-    val roundMode_s1  = if (latency >= 1) RegNext(io.roundingMode)     else io.roundingMode
-    val detectTiny_s1 = if (latency >= 1) RegNext(io.detectTininess)   else io.detectTininess
+    def pipe[T <: Data](sig: T, n: Int): T =
+        (0 until n).foldLeft(sig)((s, _) => RegNext(s))
+
+    val toPostMul_s1  = pipe(preMul.io.toPostMul, postmulRegs)
+    val mulAddRes_s1  = pipe(mulAddResult,        postmulRegs)
+    val roundMode_s1  = pipe(io.roundingMode,     postmulRegs)
+    val detectTiny_s1 = pipe(io.detectTininess,   postmulRegs)
 
     val postMul = Module(new MulAddRecFNToRaw_postMul(expWidth, sigWidth))
     postMul.io.fromPreMul   := toPostMul_s1
@@ -384,11 +391,11 @@ class MulAddRecFNPipe(val latency: Int, expWidth: Int, sigWidth: Int) extends Mo
     postMul.io.roundingMode := roundMode_s1
 
     val round = Module(new RoundRawFNToRecFN(expWidth, sigWidth, 0))
-    round.io.invalidExc     := postMul.io.invalidExc
+    round.io.invalidExc     := pipe(postMul.io.invalidExc, roundRegs)
     round.io.infiniteExc    := false.B
-    round.io.in             := postMul.io.rawOut
-    round.io.roundingMode   := roundMode_s1
-    round.io.detectTininess := detectTiny_s1
+    round.io.in             := pipe(postMul.io.rawOut,     roundRegs)
+    round.io.roundingMode   := pipe(roundMode_s1,          roundRegs)
+    round.io.detectTininess := pipe(detectTiny_s1,         roundRegs)
     io.out            := round.io.out
     io.exceptionFlags := round.io.exceptionFlags
 }

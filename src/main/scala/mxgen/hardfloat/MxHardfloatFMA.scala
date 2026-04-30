@@ -8,8 +8,8 @@ import mxgen._
 // uniformBF16=true: MulAddRecFN(8,8) per lane; false: sized per lane.
 class MxHardfloatFMA(val config: MxConfig, val uniformBF16: Boolean = true,
                      val latency: Int = 0) extends Module {
-  require(latency == 0 || latency == 1,
-    s"MxHardfloatFMA: latency must be 0 or 1 (got $latency)")
+  require(latency >= 0 && latency <= 2,
+    s"MxHardfloatFMA: latency must be 0, 1, or 2 (got $latency)")
   println(s"Creating MxHardfloatFMA baseline (uniformBF16=$uniformBF16, latency=$latency) acc=${config.accFormat}")
   println(config.describe)
 

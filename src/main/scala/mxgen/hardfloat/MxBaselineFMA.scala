@@ -144,7 +144,8 @@ private[hardfloat] object BaselineHelpers {
 
   // ---------- Arithmetic primitives ----------
 
-  // Fused MA at (e, s). latency>=1 adds a product/post-mul pipeline register.
+  // Fused MA at (e, s). latency=1 adds a product/post-mul pipeline register;
+  // latency=2 adds an additional post-mul/round register inside the pipe.
   def mulAddRecFN(aRec: UInt, bRec: UInt, cRec: UInt, e: Int, s: Int,
                   latency: Int = 0): UInt = {
     val m = Module(new MulAddRecFNPipe(latency, e, s))
@@ -166,6 +167,8 @@ private[hardfloat] object BaselineHelpers {
 
   // Multiply at product precision, widen, add at acc precision. The add is
   // done as MulAdd(widened, 1.0, c) — avoids an AddRecFN bit-range bug at sig∈{7,8}.
+  // latency=1: register at the mul/add boundary. latency=2: same boundary register
+  // plus a post-mul/round register inside the FMA (via MulAddRecFNPipe).
   def mulThenAdd(aRec: UInt, bRec: UInt, cRec: UInt,
                  pE: Int, pS: Int, aE: Int, aS: Int,
                  latency: Int = 0): UInt = {
@@ -177,7 +180,8 @@ private[hardfloat] object BaselineHelpers {
     val mulOut   = if (latency >= 1) RegNext(mul.io.out) else mul.io.out
     val cDelayed = if (latency >= 1) RegNext(cRec)       else cRec
     val widened  = widenRecFN(mulOut, pE, pS, aE, aS)
-    val fma = Module(new MulAddRecFN(aE, aS))
+    val fmaLatency = if (latency >= 2) 1 else 0
+    val fma = Module(new MulAddRecFNPipe(fmaLatency, aE, aS))
     fma.io.op := 0.U
     fma.io.a := widened
     fma.io.b := oneRecFN(aE, aS)

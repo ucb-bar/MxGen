@@ -5,8 +5,8 @@ import chisel3.util._
 import mxgen.hardfloat._
 
 class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends Module {
-  require(latency == 0 || latency == 1,
-    s"MxFpMul: latency must be 0 or 1 (got $latency)")
+  require(latency >= 0 && latency <= 2,
+    s"MxFpMul: latency must be 0, 1, or 2 (got $latency)")
   println("Creating MxFpMul with product precision: " + config.productFormat + " and acc precision: " + config.accFormat + s" (latency=$latency)")
   println(config.describe)
 
@@ -353,8 +353,12 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
 
   def peMagOut1: UInt = out_pe(outSig - 1, 0)
 
+  // latency=2 splits as: one reg before MxPEAddRecFN (registers peMag/peExp/...
+  // /c on the wires below) plus one reg inside it (toPostMul/mulAddResult).
+  val addLatency  = if (latency >= 1) 1 else 0
+  val preAddRegs  = if (latency >= 2) 1 else 0
   val addUnits = Seq.fill(config.numActiveOutputLanes)(
-    Module(new hardfloatHelper.MxPEAddRecFN(cType.exp, cType.sig, laneExpWidth, outBias, latency)))
+    Module(new hardfloatHelper.MxPEAddRecFN(cType.exp, cType.sig, laneExpWidth, outBias, addLatency)))
   val outputs = Wire(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
 
   val peIsNaN = nanA || nanW
@@ -418,16 +422,19 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
         (magSel, expSel, signSel, zeroSel)
     }
 
-    // latency=1 pipeline reg lives at mulAddResult inside MxPEAddRecFN
-    // (same split as stock MulAddRecFNPipe: product-sum | CLZ+norm+round).
+    // latency=1 reg lives at mulAddResult inside MxPEAddRecFN (same split as
+    // stock MulAddRecFNPipe). latency=2 adds another reg here, before the adder,
+    // so the pipeline is: PE/Exp | rawC+align+mulAddResult | postMul+round.
+    def pipe[T <: chisel3.Data](sig: T, n: Int): T =
+      (0 until n).foldLeft(sig)((s, _) => RegNext(s))
     addUnits(i).io.roundingMode   := hardfloat.consts.round_near_even
     addUnits(i).io.detectTininess := hardfloat.consts.tininess_afterRounding
-    addUnits(i).io.peMag    := peMag
-    addUnits(i).io.peExp    := peExp
-    addUnits(i).io.peSign   := peSign
-    addUnits(i).io.peIsZero := peZero
-    addUnits(i).io.peIsNaN  := peIsNaN
-    addUnits(i).io.c        := recIn_c(i)
+    addUnits(i).io.peMag    := pipe(peMag,     preAddRegs)
+    addUnits(i).io.peExp    := pipe(peExp,     preAddRegs)
+    addUnits(i).io.peSign   := pipe(peSign,    preAddRegs)
+    addUnits(i).io.peIsZero := pipe(peZero,    preAddRegs)
+    addUnits(i).io.peIsNaN  := pipe(peIsNaN,   preAddRegs)
+    addUnits(i).io.c        := pipe(recIn_c(i), preAddRegs)
 
     outputs(i) := addUnits(i).io.out
   }
