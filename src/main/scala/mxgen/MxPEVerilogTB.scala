@@ -229,8 +229,8 @@ class MxPEVerilogTB(
   latency:       Int    = 0,
   override val desiredName: String = "MxPEVerilogTB"
 ) extends Module {
-  require(latency == 0 || latency == 1,
-    s"MxPEVerilogTB: latency must be 0 or 1 (got $latency)")
+  require(latency >= 0 && latency <= 2,
+    s"MxPEVerilogTB: latency must be 0, 1, or 2 (got $latency)")
   require(vectors.nonEmpty, "MxPEVerilogTB: vectors must be non-empty")
 
   val numTests  = vectors.length
