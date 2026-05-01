@@ -153,6 +153,10 @@ case class MxConfig (
   expAdderWidths:   Seq[Int]                   = Seq(4, 3, 3, 3),
   laneOutputWidths: Option[Seq[Int]]           = None,
   modesOverride:    Option[List[MxPEParams]]   = None,
+  // When true, swap the per-lane fused MxPEAddRecFN for an open-source BF16
+  // adder (cvfpu/fpnew). The MxPE multiplier frontend is preserved; the PE
+  // product is rounded to BF16 before the add. Requires accFormat==BF16(8,8).
+  useFpnewAdder:    Boolean                    = false,
 ) {
   require(actFormats.nonEmpty, "MxConfig: actFormats must not be empty")
   require(weiFormats.nonEmpty, "MxConfig: weiFormats must not be empty")

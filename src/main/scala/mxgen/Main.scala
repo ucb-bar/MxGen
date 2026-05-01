@@ -95,6 +95,9 @@ object Main extends App {
       expAdderWidths = Seq(5, 5, 5, 5),
       modesOverride  = Some(List(MxPEParams.mode0, MxPEParams.mode4, MxPEParams.mode8))
     ),
+    // Same as fp8 but routes the per-lane add through cvfpu/fpnew BF16 adder.
+    "fp8-fpnew" -> MxConfig.fp8.copy(useFpnewAdder = true),
+    "all-fpnew" -> MxConfig.all.copy(useFpnewAdder = true)
   )
 
   val positional = args.filterNot(_.contains("="))

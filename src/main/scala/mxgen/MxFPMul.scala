@@ -355,14 +355,28 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
 
   // latency=2 splits as: one reg before MxPEAddRecFN (registers peMag/peExp/...
   // /c on the wires below) plus one reg inside it (toPostMul/mulAddResult).
+  // The fpnew variant maps latency directly to the BlackBox's NumPipeRegs and
+  // does not use the pre/inside split.
   val addLatency  = if (latency >= 1) 1 else 0
   val preAddRegs  = if (latency >= 2) 1 else 0
-  val addUnits = Seq.fill(config.numActiveOutputLanes)(
-    Module(new hardfloatHelper.MxPEAddRecFN(cType.exp, cType.sig, laneExpWidth, outBias, addLatency)))
+  if (config.useFpnewAdder) {
+    require(config.accFormat.exp == 8 && config.accFormat.sig == 8,
+      s"useFpnewAdder requires accFormat=BF16(8,8); got ${config.accFormat}")
+  }
+  val addUnits: Option[Seq[hardfloatHelper.MxPEAddRecFN]] =
+    if (config.useFpnewAdder) None
+    else Some(Seq.fill(config.numActiveOutputLanes)(
+      Module(new hardfloatHelper.MxPEAddRecFN(cType.exp, cType.sig, laneExpWidth, outBias, addLatency))))
   val outputs = Wire(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
 
   val peIsNaN = nanA || nanW
   val recIn_c = io.rec_c.asTypeOf(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
+
+  // Per-lane PE outputs captured for either adder path.
+  val peMagW  = Wire(Vec(config.numActiveOutputLanes, UInt(cType.sig.W)))
+  val peExpW  = Wire(Vec(config.numActiveOutputLanes, UInt(laneExpWidth.W)))
+  val peSignW = Wire(Vec(config.numActiveOutputLanes, Bool()))
+  val peZeroW = Wire(Vec(config.numActiveOutputLanes, Bool()))
 
   for (i <- 0 until config.numActiveOutputLanes) {
     // Per-output-mode peMag and peExp slices. Lane indexing mirrors the
@@ -422,21 +436,99 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
         (magSel, expSel, signSel, zeroSel)
     }
 
+    // Capture for the adder stage (either hardfloat MxPEAddRecFN or fpnew BB).
+    peMagW(i)  := peMag
+    peExpW(i)  := peExp
+    peSignW(i) := peSign
+    peZeroW(i) := peZero
+
     // latency=1 reg lives at mulAddResult inside MxPEAddRecFN (same split as
     // stock MulAddRecFNPipe). latency=2 adds another reg here, before the adder,
     // so the pipeline is: PE/Exp | rawC+align+mulAddResult | postMul+round.
-    def pipe[T <: chisel3.Data](sig: T, n: Int): T =
-      (0 until n).foldLeft(sig)((s, _) => RegNext(s))
-    addUnits(i).io.roundingMode   := hardfloat.consts.round_near_even
-    addUnits(i).io.detectTininess := hardfloat.consts.tininess_afterRounding
-    addUnits(i).io.peMag    := pipe(peMag,     preAddRegs)
-    addUnits(i).io.peExp    := pipe(peExp,     preAddRegs)
-    addUnits(i).io.peSign   := pipe(peSign,    preAddRegs)
-    addUnits(i).io.peIsZero := pipe(peZero,    preAddRegs)
-    addUnits(i).io.peIsNaN  := pipe(peIsNaN,   preAddRegs)
-    addUnits(i).io.c        := pipe(recIn_c(i), preAddRegs)
+    if (!config.useFpnewAdder) {
+      def pipe[T <: chisel3.Data](sig: T, n: Int): T =
+        (0 until n).foldLeft(sig)((s, _) => RegNext(s))
+      val unit = addUnits.get(i)
+      unit.io.roundingMode   := hardfloat.consts.round_near_even
+      unit.io.detectTininess := hardfloat.consts.tininess_afterRounding
+      unit.io.peMag    := pipe(peMag,     preAddRegs)
+      unit.io.peExp    := pipe(peExp,     preAddRegs)
+      unit.io.peSign   := pipe(peSign,    preAddRegs)
+      unit.io.peIsZero := pipe(peZero,    preAddRegs)
+      unit.io.peIsNaN  := pipe(peIsNaN,   preAddRegs)
+      unit.io.c        := pipe(recIn_c(i), preAddRegs)
 
-    outputs(i) := addUnits(i).io.out
+      outputs(i) := unit.io.out
+    }
+  }
+
+  // ---- fpnew/cvfpu adder path (BF16 only) -----------------------------------
+  // Round each lane's raw PE product (peMag/peExp/peSign + isZero/isNaN) to
+  // IEEE BF16 via a (peExpWidth, peMagWidth) RawFloat → recoded BF16 round →
+  // IEEE BF16 cast. The cast widens product precision into BF16 — for configs
+  // where productFormat ≠ BF16 (e.g., mxgemmini's E4M3 product), peExp is only
+  // peExpWidth bits and biased by productFormat.bias, so we can't reuse the
+  // BF16-shaped MxPEOutToRaw helper directly.
+  //
+  // peMag is `cType.sig`-bit MSB-aligned; we count leading zeros, normalize
+  // to put the implicit-1 at bit (peMagWidth-1), and compute the recoded sExp
+  // sExp = peExp - productBias - normDist + 2^peExpWidth (hardfloat's recoded
+  // sExp == unbiased + 2^inExpWidth — independent of bias).
+  if (config.useFpnewAdder) {
+    val numLanes     = config.numActiveOutputLanes
+    val productBias  = config.productFormat.bias
+    val peMagWidth   = cType.sig
+    val peExpWidth   = laneExpWidth                    // = productFormat.exp + 1
+    val sExpW        = peExpWidth + 2                  // RawFloat.sExp width
+    val recodedOff   = (BigInt(1) << peExpWidth) - BigInt(productBias)
+
+    def peProductToBf16Ieee(
+      peMag: UInt, peExp: UInt, peSign: Bool, peIsZero: Bool, peIsNaN: Bool
+    ): UInt = {
+      val isZero   = peIsZero || (peMag === 0.U)
+      val normDist = countLeadingZeros(peMag)
+      // Shift peMag left so the leading-1 lands at bit (peMagWidth-1).
+      val normMag  = (peMag << normDist)(peMagWidth - 1, 0)
+      // sExp computed in UInt domain (always non-negative for our value range)
+      // then reinterpreted as SInt to match RawFloat.sExp.
+      val sExpUInt = peExp +& recodedOff.U(sExpW.W) - normDist
+      val sExpSInt = sExpUInt(sExpW - 1, 0).asSInt
+      // sig: top 2 bits cannot both be 0; convention is "0_<implicit_1>_<frac>".
+      val sig = 0.U(1.W) ## (!isZero) ## normMag(peMagWidth - 2, 0)
+
+      val raw = Wire(new RawFloat(peExpWidth, peMagWidth))
+      raw.isNaN  := peIsNaN
+      raw.isInf  := false.B
+      raw.isZero := isZero
+      raw.sign   := peSign
+      raw.sExp   := sExpSInt
+      raw.sig    := sig
+
+      val cvt = Module(new RoundAnyRawFNToRecFN(peExpWidth, peMagWidth, 8, 8, 0))
+      cvt.io.in             := raw
+      cvt.io.invalidExc     := false.B
+      cvt.io.infiniteExc    := false.B
+      cvt.io.roundingMode   := hardfloat.consts.round_near_even
+      cvt.io.detectTininess := hardfloat.consts.tininess_afterRounding
+      fNFromRecFN(8, 8, cvt.io.out)
+    }
+
+    val laneProductIeee = (0 until numLanes).map { i =>
+      peProductToBf16Ieee(peMagW(i), peExpW(i), peSignW(i), peZeroW(i), peIsNaN)
+    }
+    val laneCIeee = (0 until numLanes).map { i =>
+      fNFromRecFN(8, 8, recIn_c(i))
+    }
+    val adder = Module(new mxgen.cvfpu.MxFpnewBf16Add(numLanes = numLanes, numPipeRegs = latency))
+    adder.io.clock := clock
+    adder.io.reset := reset
+    adder.io.a_i   := Cat(laneProductIeee.reverse)
+    adder.io.b_i   := Cat(laneCIeee.reverse)
+
+    val outVec = adder.io.out_o.asTypeOf(Vec(numLanes, UInt(16.W)))
+    for (i <- 0 until numLanes) {
+      outputs(i) := recFNFromFN(8, 8, outVec(i))
+    }
   }
 
   io.out := outputs.asUInt
