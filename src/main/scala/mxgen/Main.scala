@@ -123,32 +123,7 @@ object Main extends App {
   }
   def latencyDir(l: Int): String = if (l == 0) "" else s"-lat$l"
 
-  // tb=0 disables emission of per-DUT Verilog testbenches (default: on).
-  val runTB = flags.get("tb").map(_.toInt).getOrElse(1) != 0
-
-  println(s"=== Elaboration latencies=${latencies.mkString(",")} tb=$runTB ===")
-
-  // Sanitize a config label so it can be embedded in a Verilog identifier.
-  def safeIdent(s: String): String = s.replaceAll("[^A-Za-z0-9_]", "_")
-
-  def emitTB(
-    name:           String,
-    config:         MxConfig,
-    kind:           MxPEDutKind,
-    targetDir:      String,
-    sameFormatOnly: Boolean,
-    latency:        Int
-  ): Unit = {
-    val vectors = MxPETBVectors.generate(config, sameFormatOnly = sameFormatOnly)
-    val tbName  = s"MxPEVerilogTB_${kind.label.replace('-', '_')}_${safeIdent(name)}" +
-                  (if (latency == 0) "" else s"_lat$latency")
-    println(s"=== Elaborating testbench: $tbName (${vectors.length} vectors) ===")
-    circt.stage.ChiselStage.emitSystemVerilog(
-      new MxPEVerilogTB(config, kind, vectors, latency = latency, desiredName = tbName),
-      Array.empty,
-      Array("--split-verilog", "-o", targetDir)
-    )
-  }
+  println(s"=== Elaboration latencies=${latencies.mkString(",")} ===")
 
   def splitFirtoolOpts(dir: String): Array[String] =
     Array("--split-verilog", "-o", dir)
@@ -163,7 +138,6 @@ object Main extends App {
         Array.empty,
         splitFirtoolOpts(dir)
       )
-      if (runTB) emitTB(name, config, MxPEDutKind.MxFpMulDut(lut = false), s"$dir/tb", sameFormatOnly = false, latency)
     }
     if (runBaseline) {
       println(s"=== Elaborating hardfloat baseline: $name (latency=$latency) ===")
@@ -173,7 +147,6 @@ object Main extends App {
         Array.empty,
         splitFirtoolOpts(dir)
       )
-      if (runTB) emitTB(name, config, MxPEDutKind.HardfloatFMADut, s"$dir/tb", sameFormatOnly = false, latency)
     }
     if (runPerFmt) {
       println(s"=== Elaborating per-format baseline: $name (latency=$latency) ===")
@@ -183,7 +156,6 @@ object Main extends App {
         Array.empty,
         splitFirtoolOpts(dir)
       )
-      if (runTB) emitTB(name, config, MxPEDutKind.PerFormatFMADut, s"$dir/tb", sameFormatOnly = true, latency)
     }
   }
 }
