@@ -3,9 +3,6 @@ package mxgen
 import chisel3._
 import mxgen.hardfloat.{MxHardfloatFMA, MxPerFormatFMA}
 
-import java.nio.file.{Files, Paths}
-import scala.jdk.CollectionConverters._
-
 // Input+output register wrapper. `latency=1` forwards to the inner module and
 // adds one pipeline register between the product and add stage.
 class RegisteredMxFpMul(config: MxConfig, latency: Int = 0) extends Module {
@@ -156,24 +153,6 @@ object Main extends App {
   def splitFirtoolOpts(dir: String): Array[String] =
     Array("--split-verilog", "-o", dir)
 
-
-  def inlineRegistersSvh(dir: String): Unit = {
-    val fmaPath  = Paths.get(dir, "fpnew_fma.sv")
-    val regsPath = Paths.get(dir, "registers.svh")
-    if (!Files.exists(fmaPath) || !Files.exists(regsPath)) return
-    val lines = Files.readAllLines(fmaPath).asScala.toSeq
-    val includeRe = """^\s*`include\s+"common_cells/registers.svh"\s*$""".r
-    if (!lines.exists(l => includeRe.findFirstIn(l).isDefined)) return
-    val regsContent = Files.readAllLines(regsPath).asScala.toSeq
-    val patched = lines.flatMap {
-      case l if includeRe.findFirstIn(l).isDefined =>
-        Seq("// `include \"common_cells/registers.svh\" — inlined below for synth self-containment") ++ regsContent
-      case l => Seq(l)
-    }
-    Files.write(fmaPath, patched.asJava)
-    Files.deleteIfExists(regsPath)
-  }
-
   for (latency <- latencies; (name, config) <- configs) {
     if (runMxFpMul) {
       println(s"=== Elaborating MxFpMul: $name (latency=$latency) ===")
@@ -184,12 +163,7 @@ object Main extends App {
         Array.empty,
         splitFirtoolOpts(dir)
       )
-      inlineRegistersSvh(dir)
-      if (runTB) {
-        val tbDir = s"$dir/tb"
-        emitTB(name, config, MxPEDutKind.MxFpMulDut(lut = false), tbDir, sameFormatOnly = false, latency)
-        inlineRegistersSvh(tbDir)
-      }
+      if (runTB) emitTB(name, config, MxPEDutKind.MxFpMulDut(lut = false), s"$dir/tb", sameFormatOnly = false, latency)
     }
     if (runBaseline) {
       println(s"=== Elaborating hardfloat baseline: $name (latency=$latency) ===")

@@ -14,3 +14,6 @@ scalacOptions:
   - -unchecked
   - -language:reflectiveCalls
 mainClass: mxgen.Main
+# sbt/maven layout — chipyard generators use src/main/resources/.
+resources:
+  - src/main/resources
