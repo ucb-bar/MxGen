@@ -314,8 +314,16 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
   val outBias     = productFmt.bias
   val laneExpWidth = outExp + 1
 
-  // Build an MSB-aligned sigWidth-bit peMag from the raw out_pe slice; runtime
-  // mux on actType.sig/weiType.sig picks the width that matches the mode.
+  // MSB-align an n-bit raw mult slice into a cType.sig-bit field. When
+  // cType.sig >= n we pad LSBs with zeros; when cType.sig < n we truncate the
+  // low (n - cType.sig) bits of the raw output, since the accumulator can't
+  // represent them anyway.
+  def alignToAccSig(base: Int, n: Int): UInt =
+    if (cType.sig >= n) Cat(out_pe(base + n - 1, base), 0.U((cType.sig - n).W))
+    else                out_pe(base + n - 1, base + n - cType.sig)
+
+  // Build a cType.sig-bit peMag from the raw out_pe slice; runtime mux on
+  // actType.sig/weiType.sig picks the width that matches the mode.
   def peMagOut4(laneIdx: Int): UInt = {
     val laneW = config.outPE_width / 4
     val base  = laneIdx * laneW
@@ -323,9 +331,9 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
                       .map(m => (m.actWidth, m.weiWidth)).toSet
     val need6 = laneW >= 6 && pairs.contains((3, 3))
     val need5 = laneW >= 5 && (pairs.contains((2, 3)) || pairs.contains((3, 2)))
-    val s4    = Cat(out_pe(base + 3, base), 0.U((cType.sig - 4).W))
-    val m6    = if (need6) Some(Cat(out_pe(base + 5, base), 0.U((cType.sig - 6).W))) else None
-    val m5    = if (need5) Some(Cat(out_pe(base + 4, base), 0.U((cType.sig - 5).W))) else None
+    val s4    = alignToAccSig(base, 4)
+    val m6    = if (need6) Some(alignToAccSig(base, 6)) else None
+    val m5    = if (need5) Some(alignToAccSig(base, 5)) else None
     (m6, m5) match {
       case (Some(v6), Some(v5)) =>
         Mux(actType.sig === 2.U && weiType.sig === 2.U, s4,
@@ -342,8 +350,8 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
     val halfW = config.outPE_width / 2
     val base  = laneIdx * halfW
     val need7 = halfW >= 7
-    val s6    = Cat(out_pe(base + 5, base), 0.U((cType.sig - 6).W))
-    val m7    = if (need7) Some(Cat(out_pe(base + 6, base), 0.U((cType.sig - 7).W))) else None
+    val s6    = alignToAccSig(base, 6)
+    val m7    = if (need7) Some(alignToAccSig(base, 7)) else None
     m7 match {
       case Some(v7) =>
         Mux(actType.sig === 2.U || weiType.sig === 2.U, s6, v7)
