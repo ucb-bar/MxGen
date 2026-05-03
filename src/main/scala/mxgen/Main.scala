@@ -3,6 +3,9 @@ package mxgen
 import chisel3._
 import mxgen.hardfloat.{MxHardfloatFMA, MxPerFormatFMA}
 
+import java.nio.file.{Files, Paths}
+import scala.jdk.CollectionConverters._
+
 // Input+output register wrapper. `latency=1` forwards to the inner module and
 // adds one pipeline register between the product and add stage.
 class RegisteredMxFpMul(config: MxConfig, latency: Int = 0) extends Module {
@@ -143,10 +146,32 @@ object Main extends App {
     val tbName  = s"MxPEVerilogTB_${kind.label.replace('-', '_')}_${safeIdent(name)}" +
                   (if (latency == 0) "" else s"_lat$latency")
     println(s"=== Elaborating testbench: $tbName (${vectors.length} vectors) ===")
-    circt.stage.ChiselStage.emitSystemVerilogFile(
+    circt.stage.ChiselStage.emitSystemVerilog(
       new MxPEVerilogTB(config, kind, vectors, latency = latency, desiredName = tbName),
-      Array("--target-dir", targetDir)
+      Array.empty,
+      Array("--split-verilog", "-o", targetDir)
     )
+  }
+
+  def splitFirtoolOpts(dir: String): Array[String] =
+    Array("--split-verilog", "-o", dir)
+
+
+  def inlineRegistersSvh(dir: String): Unit = {
+    val fmaPath  = Paths.get(dir, "fpnew_fma.sv")
+    val regsPath = Paths.get(dir, "registers.svh")
+    if (!Files.exists(fmaPath) || !Files.exists(regsPath)) return
+    val lines = Files.readAllLines(fmaPath).asScala.toSeq
+    val includeRe = """^\s*`include\s+"common_cells/registers.svh"\s*$""".r
+    if (!lines.exists(l => includeRe.findFirstIn(l).isDefined)) return
+    val regsContent = Files.readAllLines(regsPath).asScala.toSeq
+    val patched = lines.flatMap {
+      case l if includeRe.findFirstIn(l).isDefined =>
+        Seq("// `include \"common_cells/registers.svh\" — inlined below for synth self-containment") ++ regsContent
+      case l => Seq(l)
+    }
+    Files.write(fmaPath, patched.asJava)
+    Files.deleteIfExists(regsPath)
   }
 
   for (latency <- latencies; (name, config) <- configs) {
@@ -154,29 +179,37 @@ object Main extends App {
       println(s"=== Elaborating MxFpMul: $name (latency=$latency) ===")
       println(config.describe)
       val dir = s"generated${latencyDir(latency)}/$name"
-      circt.stage.ChiselStage.emitSystemVerilogFile(
+      circt.stage.ChiselStage.emitSystemVerilog(
         new MxFpMul(config, lut = false, latency = latency),
-        Array("--target-dir", dir)
+        Array.empty,
+        splitFirtoolOpts(dir)
       )
-      if (runTB) emitTB(name, config, MxPEDutKind.MxFpMulDut(lut = false), dir, sameFormatOnly = false, latency)
+      inlineRegistersSvh(dir)
+      if (runTB) {
+        val tbDir = s"$dir/tb"
+        emitTB(name, config, MxPEDutKind.MxFpMulDut(lut = false), tbDir, sameFormatOnly = false, latency)
+        inlineRegistersSvh(tbDir)
+      }
     }
     if (runBaseline) {
       println(s"=== Elaborating hardfloat baseline: $name (latency=$latency) ===")
       val dir = s"generated${latencyDir(latency)}/hardfloat-baseline/$name"
-      circt.stage.ChiselStage.emitSystemVerilogFile(
+      circt.stage.ChiselStage.emitSystemVerilog(
         new MxHardfloatFMA(config, latency = latency),
-        Array("--target-dir", dir)
+        Array.empty,
+        splitFirtoolOpts(dir)
       )
-      if (runTB) emitTB(name, config, MxPEDutKind.HardfloatFMADut, dir, sameFormatOnly = false, latency)
+      if (runTB) emitTB(name, config, MxPEDutKind.HardfloatFMADut, s"$dir/tb", sameFormatOnly = false, latency)
     }
     if (runPerFmt) {
       println(s"=== Elaborating per-format baseline: $name (latency=$latency) ===")
       val dir = s"generated${latencyDir(latency)}/per-format/$name"
-      circt.stage.ChiselStage.emitSystemVerilogFile(
+      circt.stage.ChiselStage.emitSystemVerilog(
         new MxPerFormatFMA(config, latency = latency),
-        Array("--target-dir", dir)
+        Array.empty,
+        splitFirtoolOpts(dir)
       )
-      if (runTB) emitTB(name, config, MxPEDutKind.PerFormatFMADut, dir, sameFormatOnly = true, latency)
+      if (runTB) emitTB(name, config, MxPEDutKind.PerFormatFMADut, s"$dir/tb", sameFormatOnly = true, latency)
     }
   }
 }
