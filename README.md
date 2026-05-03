@@ -53,6 +53,12 @@ Key `MxConfig` parameters:
 - `modesOverride` — explicitly restrict which PE modes are instantiated
 - `laneOutputWidths` — optional per-lane output bit widths
 
+## Adder Backend
+
+The per-lane add stage after the multiplier grid is pluggable. The hardfloat implementation (`MxPEAddRecFN`, from the Berkeley hardfloat library) is the most-used one and what `MxFpMul` defaults to.
+
+The `useFpnewAdder = true` `MxConfig` flag routes the per-lane add through cvfpu/fpnew's `fpnew_fma` in BF16 ADD mode. This is provided only as an example — its main purpose is to serve as a reference for integrating other adder implementations. The wrapper at `src/main/scala/mxgen/cvfpu/MxFpnewBf16Add.scala` shows the pattern.
+
 ## Building and Testing
 
 Requires [Mill](https://mill-build.com/).
