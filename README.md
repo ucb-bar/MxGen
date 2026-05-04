@@ -55,9 +55,11 @@ Key `MxConfig` parameters:
 
 ## Adder Backend
 
-The per-lane add stage after the multiplier grid is pluggable. The hardfloat implementation (`MxPEAddRecFN`, from the Berkeley hardfloat library) is the most-used one and what `MxFpMul` defaults to.
+The per-lane add after the multiplier grid is pluggable. `MxFpMul` defaults to Berkeley hardfloat's `MxPEAddRecFN`. Setting `useFpnewAdder = true` swaps in cvfpu/fpnew's BF16 `fpnew_fma` (see `src/main/scala/mxgen/cvfpu/MxFpnewBf16Add.scala`) as a reference pattern for integrating other backends.
 
-The `useFpnewAdder = true` `MxConfig` flag routes the per-lane add through cvfpu/fpnew's `fpnew_fma` in BF16 ADD mode. This is provided only as an example — its main purpose is to serve as a reference for integrating other adder implementations. The wrapper at `src/main/scala/mxgen/cvfpu/MxFpnewBf16Add.scala` shows the pattern.
+## Dot-Product Tree
+
+`MxDotProduct` (under `src/main/scala/configs/dot-product/`) reuses `MxFpMulCore` (the multiplier-only split of `MxFpMul`) as its PE and feeds all per-lane products + a partial sum into an anchor-aligned reduction tree (`MxAnchorAccTree`). Lane geometry is runtime-derived: fp4/fp6 modes reduce `numCores * 4` products, fp8 reduces `numCores`. Key params: `numCores` (1 or 4; 1 only for fp4/fp6-only), `latency` / `coreLatency` (0–2, mirrors MxFpMul), and `MxConfig.anchorHeadroom` (precision floor above max-exp). Elaborate with `./mill run dotproduct numcores=4 latency=0`.
 
 ## Building and Testing
 
