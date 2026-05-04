@@ -12,7 +12,8 @@ import chisel3.util._
   * @param config       MxConfig (productFormat, accFormat, anchorHeadroom, …)
   * @param lut          forwarded to each MxFpMulCore's MxPE
   * @param numCores     1 or 4 — number of MxFpMulCore instances. numCores=1
-  *                     requires fixedNumOutputs==4 (fp4/fp6-only configs).
+  *                     requires every supported PE mode to emit 4 outputs
+  *                     (fixedNumOutputs == 4 — i.e. all sig≤3 pairings).
   * @param latency      0/1/2 total dot-product latency, mirrors MxFpMul.
   * @param coreLatency  register stages between cores and tree input;
   *                     must be ≤ latency. The tree absorbs the remaining
@@ -33,7 +34,8 @@ class MxDotProduct(
     s"MxDotProduct: numCores must be 1 or 4 (got $numCores)")
   if (numCores == 1) {
     require(config.fixedNumOutputs.contains(4),
-      "MxDotProduct: numCores=1 requires a fp4/fp6-only config (fixedNumOutputs == 4)")
+      "MxDotProduct: numCores=1 requires every supported PE mode to emit 4 outputs " +
+      "(fixedNumOutputs == 4)")
   }
 
   println(s"Creating MxDotProduct: numCores=$numCores, latency=$latency, " +

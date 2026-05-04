@@ -114,7 +114,8 @@ object Main extends App {
   require(runMxFpMul || runBaseline || runPerFmt || runDotProd,
     s"Unknown argument '$arg' — expected 'mxfpmul', 'hardfloat', 'performat', 'dotproduct', or 'all'")
 
-  // numCores=N for dot-product elaborations (1 only valid for fp4/fp6-only).
+  // numCores=N for dot-product elaborations (1 only valid when all supported
+  // PE modes emit 4 outputs).
   val dpNumCores: Int = flags.get("numcores").map(_.toInt).getOrElse(4)
   require(dpNumCores == 1 || dpNumCores == 4,
     s"numcores must be 1 or 4 (got $dpNumCores)")
@@ -224,7 +225,8 @@ object Main extends App {
         )
       }
       if (runDotProd) {
-        // numCores=1 only valid for fp4/fp6-only configs (fixedNumOutputs==4).
+        // Fall back to numCores=4 when the config has any PE mode that emits
+        // fewer than 4 outputs.
         val coresFor = if (dpNumCores == 1 && !config.fixedNumOutputs.contains(4)) 4 else dpNumCores
         println(s"=== Elaborating MxDotProduct: $name (numCores=$coresFor, latency=$latency) ===")
         val dir = s"generated${latencyDir(latency)}/dot-product/$name-c$coresFor"
