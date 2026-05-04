@@ -110,8 +110,14 @@ object Main extends App {
   val runMxFpMul  = runAll || arg == "mxfpmul"
   val runBaseline = runAll || arg == "hardfloat"
   val runPerFmt   = runAll || arg == "performat"
-  require(runMxFpMul || runBaseline || runPerFmt,
-    s"Unknown argument '$arg' — expected 'mxfpmul', 'hardfloat', 'performat', or 'all'")
+  val runDotProd  = runAll || arg == "dotproduct"
+  require(runMxFpMul || runBaseline || runPerFmt || runDotProd,
+    s"Unknown argument '$arg' — expected 'mxfpmul', 'hardfloat', 'performat', 'dotproduct', or 'all'")
+
+  // numCores=N for dot-product elaborations (1 only valid for fp4/fp6-only).
+  val dpNumCores: Int = flags.get("numcores").map(_.toInt).getOrElse(4)
+  require(dpNumCores == 1 || dpNumCores == 4,
+    s"numcores must be 1 or 4 (got $dpNumCores)")
 
   // latency=N picks one specific pipeline depth; omit to generate all of 0/1/2.
   val latencies: Seq[Int] = flags.get("latency") match {
@@ -213,6 +219,17 @@ object Main extends App {
         val dir = s"generated${latencyDir(latency)}/per-format/$name"
         circt.stage.ChiselStage.emitSystemVerilog(
           new MxPerFormatFMA(config, latency = latency),
+          Array.empty,
+          splitFirtoolOpts(dir)
+        )
+      }
+      if (runDotProd) {
+        // numCores=1 only valid for fp4/fp6-only configs (fixedNumOutputs==4).
+        val coresFor = if (dpNumCores == 1 && !config.fixedNumOutputs.contains(4)) 4 else dpNumCores
+        println(s"=== Elaborating MxDotProduct: $name (numCores=$coresFor, latency=$latency) ===")
+        val dir = s"generated${latencyDir(latency)}/dot-product/$name-c$coresFor"
+        circt.stage.ChiselStage.emitSystemVerilog(
+          new MxDotProduct(config, lut = false, numCores = coresFor, latency = latency),
           Array.empty,
           splitFirtoolOpts(dir)
         )
