@@ -92,3 +92,8 @@
 
 - spec: mxgen.MxHardfloatFMA_AllFormats_BF16Out_Lat1_Spec
   label: HFMA — All Formats (lat=1)
+
+# -------- dot-product (anchor-aligned reduction tree) --------
+
+- spec: mxgen.MxDotProduct_MxGemmini_Spec
+  label: MxDotProduct — mxGemmini (numCores=4, lat=0)

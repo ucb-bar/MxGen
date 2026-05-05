@@ -157,6 +157,9 @@ case class MxConfig (
   // adder (cvfpu/fpnew). The MxPE multiplier frontend is preserved; the PE
   // product is rounded to BF16 before the add. Requires accFormat==BF16(8,8).
   useFpnewAdder:    Boolean                    = false,
+  // MxDotProduct only: lower bound on bits of headroom above max-exp when
+  // setting the anchor. Auto-bumped to fit sum-overflow if too small.
+  anchorHeadroom:   Int                        = 4,
 ) {
   require(actFormats.nonEmpty, "MxConfig: actFormats must not be empty")
   require(weiFormats.nonEmpty, "MxConfig: weiFormats must not be empty")
