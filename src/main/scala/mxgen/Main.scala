@@ -111,14 +111,19 @@ object Main extends App {
   val runBaseline = runAll || arg == "hardfloat"
   val runPerFmt   = runAll || arg == "performat"
   val runDotProd  = runAll || arg == "dotproduct"
-  require(runMxFpMul || runBaseline || runPerFmt || runDotProd,
-    s"Unknown argument '$arg' — expected 'mxfpmul', 'hardfloat', 'performat', 'dotproduct', or 'all'")
+  val runSystolic = runAll || arg == "systolic"
+  require(runMxFpMul || runBaseline || runPerFmt || runDotProd || runSystolic,
+    s"Unknown argument '$arg' — expected 'mxfpmul', 'hardfloat', 'performat', 'dotproduct', 'systolic', or 'all'")
 
   // numCores=N for dot-product elaborations (1 only valid when all supported
   // PE modes emit 4 outputs).
   val dpNumCores: Int = flags.get("numcores").map(_.toInt).getOrElse(4)
   require(dpNumCores == 1 || dpNumCores == 4,
     s"numcores must be 1 or 4 (got $dpNumCores)")
+
+  // arraysize=N controls the systolic array dimension (NxN).
+  val saSize: Int = flags.get("arraysize").map(_.toInt).getOrElse(4)
+  require(saSize >= 1, s"arraysize must be >= 1 (got $saSize)")
 
   // latency=N picks one specific pipeline depth; omit to generate all of 0/1/2.
   val latencies: Seq[Int] = flags.get("latency") match {
@@ -232,6 +237,25 @@ object Main extends App {
         val dir = s"generated${latencyDir(latency)}/dot-product/$name-c$coresFor"
         circt.stage.ChiselStage.emitSystemVerilog(
           new MxDotProduct(config, lut = false, numCores = coresFor, latency = latency),
+          Array.empty,
+          splitFirtoolOpts(dir)
+        )
+      }
+    }
+    if (runSystolic) {
+      // Single fixed example: NxN array, every PE = MxConfig.all with
+      // productFormat=E4M4, accFormat=E5M4.
+      val saConfig = MxConfig.all.copy(
+        productFormat = MxFormat.Custom(4, 5),
+        accFormat     = MxFormat.Custom(5, 5)
+      )
+      for (latency <- latencies) {
+        println(s"=== Elaborating MxSystolicArray: ${saSize}x${saSize} all/pE4M4/accE5M4 (latency=$latency) ===")
+        val dir = s"generated${latencyDir(latency)}/systolic/all-${saSize}x${saSize}"
+        circt.stage.ChiselStage.emitSystemVerilog(
+          new MxSystolicArray(
+            Seq.fill(saSize)(saConfig),
+            lut = false, latency = latency),
           Array.empty,
           splitFirtoolOpts(dir)
         )
