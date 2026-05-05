@@ -61,6 +61,10 @@ The per-lane add after the multiplier grid is pluggable. `MxFpMul` defaults to B
 
 `MxDotProduct` (under `src/main/scala/configs/dot-product/`) reuses `MxFpMulCore` (the multiplier-only split of `MxFpMul`) as its PE and feeds all per-lane products + a partial sum into an anchor-aligned reduction tree (`MxAnchorAccTree`). Lane geometry is runtime-derived from the active mode's per-PE output count (see the PE Multiplication Modes table): `numCores * 4` products for sig≤3 pairings (FP4, FP6_E3M2, FP8_E5M2), `numCores * 2` or `numCores * 1` when either sig is 4 (FP6_E2M3, FP8_E4M3). Key params: `numCores` (1 or 4; 1 only when every supported mode emits 4 products), `latency` / `coreLatency` (0–2, mirrors MxFpMul), and `MxConfig.anchorHeadroom` (precision floor above max-exp). Elaborate with `./mill run dotproduct numcores=4 latency=0`.
 
+## Systolic Array
+
+`MxSystolicArray` (under `src/main/scala/configs/systolic/`) is an NxN weight-stationary mesh of `MxFpMul` PEs with one register between adjacent cells; activations flow left→right, weights are loaded by a column-wise shift chain (gated by `load_weights`) and held stationary, and partial sums flow top→bottom. Configs are per-row (`Seq[MxConfig]` of length N, at most N distinct configs). Elaborate with `./mill run systolic arraysize=4 latency=1`.
+
 ## Building and Testing
 
 Requires [Mill](https://mill-build.com/).
