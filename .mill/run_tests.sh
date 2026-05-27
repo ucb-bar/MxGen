@@ -11,6 +11,8 @@ if [ ! -f "$YML" ]; then
   exit 1
 fi
 
+cd "$SCRIPT_DIR"
+
 pass=0
 fail=0
 results=()

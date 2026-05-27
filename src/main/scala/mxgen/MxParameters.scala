@@ -153,10 +153,14 @@ case class MxConfig (
   expAdderWidths:   Seq[Int]                   = Seq(4, 3, 3, 3),
   laneOutputWidths: Option[Seq[Int]]           = None,
   modesOverride:    Option[List[MxPEParams]]   = None,
-  // When true, swap the per-lane fused MxPEAddRecFN for an open-source BF16
-  // adder (cvfpu/fpnew). The MxPE multiplier frontend is preserved; the PE
-  // product is rounded to BF16 before the add. Requires accFormat==BF16(8,8).
+  // When true, swap the default add chain for an open-source BF16 adder
+  // (cvfpu/fpnew). The MxPE multiplier frontend is preserved; the PE product
+  // is rounded to BF16 before the add. Requires accFormat==BF16(8,8).
   useFpnewAdder:    Boolean                    = false,
+  // When true, use the bespoke per-lane MxPEAddRecFN. Currently validated for
+  // accFormat=BF16; narrower accFormat may produce wrong results. Left
+  // accessible for experimentation but not the default.
+  useMxPEAddRecFN:  Boolean                    = false,
   // MxDotProduct only: lower bound on bits of headroom above max-exp when
   // setting the anchor. Auto-bumped to fit sum-overflow if too small.
   anchorHeadroom:   Int                        = 4,

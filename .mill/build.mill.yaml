@@ -14,6 +14,11 @@ scalacOptions:
   - -unchecked
   - -language:reflectiveCalls
 mainClass: mxgen.Main
-# sbt/maven layout — chipyard generators use src/main/resources/.
+# Sources live at <mxgen>/src/main/scala so sbt (which only walks
+# <mxgen>/src/main/scala) sees them directly. mill workspace lives in
+# this .mill/ subdir so sbt's HiddenFileFilter skips out/, test/, etc.
+sources:
+  - ../src/main/scala
+  - elab
 resources:
-  - src/main/resources
+  - ../src/main/resources

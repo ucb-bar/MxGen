@@ -27,6 +27,7 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
     val peSign   = Output(Vec(config.numActiveOutputLanes, Bool()))
     val peIsZero = Output(Vec(config.numActiveOutputLanes, Bool()))
     val peIsNaN  = Output(Bool())
+    val rawProduct = Output(UInt(config.outPE_width.W))
   })
 
   val actType: MxTypeBundle = if (config.needsRuntimeActType) io.type_a else {
@@ -299,7 +300,11 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
     }
   }
 
-  def peMagOut1: UInt = out_pe(outSig - 1, 0)
+  def peMagOut1: UInt = {
+    val singleOutMode = config.modesSupported.find(_.numOutputs == 1).getOrElse(
+      throw new IllegalStateException("MxFpMulCore: needsOut1 set but no mode with numOutputs==1"))
+    alignToAccSig(0, singleOutMode.outTotalWidth)
+  }
 
   val peIsNaN = nanA || nanW
 
@@ -366,4 +371,5 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
   }
 
   io.peIsNaN := peIsNaN
+  io.rawProduct := out_pe
 }

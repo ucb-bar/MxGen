@@ -26,8 +26,8 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
     val out = Output(UInt((config.numActiveOutputLanes * config.accFormat.recoded).W))
   })
 
-  // Mul side lives in MxFpMulCore (shared with MxDotProduct); add side stays
-  // here, either per-lane MxPEAddRecFN or fpnew BF16.
+  // Mul side lives in MxFpMulCore (shared with MxDotProduct); add side is one
+  // of three implementations gated below.
   val core = Module(new MxFpMulCore(config, lut))
   core.io.in_activation := io.in_activation
   core.io.type_a        := io.type_a
@@ -49,9 +49,12 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
   if (config.useFpnewAdder) {
     require(config.accFormat.exp == 8 && config.accFormat.sig == 8,
       s"useFpnewAdder requires accFormat=BF16(8,8); got ${config.accFormat}")
+    require(!config.useMxPEAddRecFN,
+      "useFpnewAdder and useMxPEAddRecFN are mutually exclusive")
   }
+  val useDefault = !config.useFpnewAdder && !config.useMxPEAddRecFN
   val addUnits: Option[Seq[hardfloatHelper.MxPEAddRecFN]] =
-    if (config.useFpnewAdder) None
+    if (!config.useMxPEAddRecFN) None
     else Some(Seq.fill(config.numActiveOutputLanes)(
       Module(new hardfloatHelper.MxPEAddRecFN(cType.exp, cType.sig, laneExpWidth, outBias, addLatency))))
   val outputs = Wire(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
@@ -59,7 +62,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
   val recIn_c = io.rec_c.asTypeOf(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
 
   for (i <- 0 until config.numActiveOutputLanes) {
-    if (!config.useFpnewAdder) {
+    if (config.useMxPEAddRecFN) {
       def pipe[T <: chisel3.Data](sig: T, n: Int): T =
         (0 until n).foldLeft(sig)((s, _) => RegNext(s))
       val unit = addUnits.get(i)
@@ -73,6 +76,162 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
       unit.io.c        := pipe(recIn_c(i), preAddRegs)
 
       outputs(i) := unit.io.out
+    }
+  }
+
+  // Default add chain (mirrors original gemmini MxFpMul):
+  //   normalize(raw_product) → MxPEOutToRaw → RoundAnyRawFNToRecFN(productFmt → accFmt) → MxMulAddRecFN.
+  // Validated across narrow accFormats and matches old-gemmini bit behavior.
+  if (useDefault) {
+    val out_pe = core.io.rawProduct
+    val out_e  = peExpW
+    val out_signs = (0 until config.numActiveOutputLanes).map(i => peSignW(i))
+    val laneOutW = config.outPE_width / 4
+    val laneHalfW = config.outPE_width / 2
+    val typeA  = io.type_a
+    val typeW  = io.type_w
+
+    def normalize(prod: UInt, outBits: Int, inBits: Int): (UInt, UInt, Bool) = {
+      if (inBits > outBits) {
+        val isZero = prod === 0.U
+        val isPositiveShift = prod(inBits-1)
+        val leftShift = Mux(isPositiveShift, 0.U, PriorityEncoder(prod.asBools.reverse))
+        val expAdj = Mux(isPositiveShift, 1.U, leftShift -& 1.U)
+        val aligned = prod << leftShift
+        (Mux(isZero, 0.U(outBits.W), aligned(inBits - 2, inBits - 1 - outBits)),
+         Mux(isZero, 0.U, expAdj),
+         isPositiveShift)
+      } else {
+        val isZero = prod === 0.U
+        val extraPad = outBits - inBits
+        val realProd = prod(inBits - 1, 0)
+        val isPositiveShift = prod(inBits-1)
+        val leftShift = Mux(isPositiveShift, 1.U, PriorityEncoder(realProd.asBools.reverse) +& 1.U)
+        val expAdj = Mux(isPositiveShift, 1.U, leftShift - 2.U)
+        val aligned = realProd << leftShift
+        ((Mux(isZero, 0.U(outBits.W), aligned(inBits-1, 0) << extraPad)(outBits-1, 0)),
+         Mux(isZero, 0.U, expAdj),
+         isPositiveShift)
+      }
+    }
+
+    def resize(in: RawFloat, inT: MxFormat, outT: MxFormat): RawFloat = {
+      val u = Module(new RoundAnyRawFNToRecFN(inT.exp, inT.sig, outT.exp, outT.sig, 0))
+      u.io.in := in
+      u.io.roundingMode := hardfloat.consts.round_near_even
+      u.io.detectTininess := hardfloat.consts.tininess_afterRounding
+      u.io.invalidExc := false.B
+      u.io.infiniteExc := false.B
+      rawFloatFromRecFN(outT.exp, outT.sig, u.io.out)
+    }
+
+    // Gate per-width normalize() variants on whether any 4-output mode actually
+    // uses that product width. Avoids out-of-range slicing on out_pe for narrow
+    // configs like fp4Only (laneOutW=4).
+    val out4Pairs = config.modesSupported.filter(_.numOutputs == 4)
+                          .map(m => (m.actWidth, m.weiWidth)).toSet
+    val needSig33 = laneOutW >= 6 && out4Pairs.contains((3, 3))
+    val needSigMix = laneOutW >= 5 && (out4Pairs.contains((2, 3)) || out4Pairs.contains((3, 2)))
+    val needSig22 = out4Pairs.contains((2, 2))
+
+    val out4_toRec = if (config.needsOut4) Some(VecInit.tabulate(4) { i =>
+      val base = i * laneOutW
+      val n33 = if (needSig33)  Some(normalize(out_pe(base + 5, base), productFmt.sig - 1, 6)) else None
+      val nmx = if (needSigMix) Some(normalize(out_pe(base + 4, base), productFmt.sig - 1, 5)) else None
+      val n22 = if (needSig22)  Some(normalize(out_pe(base + 3, base), productFmt.sig - 1, 4)) else None
+      val choices = Seq(n33, nmx, n22).flatten
+      require(choices.nonEmpty, "MxFpMul default path: no 4-output product variant configured")
+      val fallback = choices.head
+      def pick[T](pred: Bool, opt: Option[T], dflt: T): T = if (opt.isDefined) opt.get else dflt
+      val rec_exp   = Mux(typeA.sig === 2.U && typeW.sig === 2.U, n22.map(_._2).getOrElse(fallback._2),
+                       Mux(typeA.sig === 3.U && typeW.sig === 3.U, n33.map(_._2).getOrElse(fallback._2),
+                         nmx.map(_._2).getOrElse(fallback._2)))
+      val shift_dir = Mux(typeA.sig === 2.U && typeW.sig === 2.U, n22.map(_._3).getOrElse(fallback._3),
+                       Mux(typeA.sig === 3.U && typeW.sig === 3.U, n33.map(_._3).getOrElse(fallback._3),
+                         nmx.map(_._3).getOrElse(fallback._3)))
+      val rec_sig   = Mux(typeA.sig === 2.U && typeW.sig === 2.U, n22.map(_._1).getOrElse(fallback._1),
+                       Mux(typeA.sig === 3.U && typeW.sig === 3.U, n33.map(_._1).getOrElse(fallback._1),
+                         nmx.map(_._1).getOrElse(fallback._1)))
+      MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(i),
+        Mux(!shift_dir, out_e(i) -% rec_exp, out_e(i) +% rec_exp),
+        rec_sig, peIsNaN, peZeroW(i))
+    }) else None
+
+    val out2Pairs = config.modesSupported.filter(_.numOutputs == 2)
+                          .map(m => (m.actWidth, m.weiWidth)).toSet
+    val need2Sig44 = laneHalfW >= 7 && out2Pairs.exists { case (a, w) => a >= 3 && w >= 3 }
+    val need2Smaller = laneHalfW >= 6
+
+    val out2_toRec = if (config.needsOut2) Some(VecInit.tabulate(2) { i =>
+      val base = i * laneHalfW
+      val n44 = if (need2Sig44)    Some(normalize(out_pe(base + 6, base), productFmt.sig - 1, 7)) else None
+      val nsm = if (need2Smaller)  Some(normalize(out_pe(base + 5, base), productFmt.sig - 1, 6)) else None
+      val choices = Seq(n44, nsm).flatten
+      require(choices.nonEmpty, "MxFpMul default path: no 2-output product variant configured")
+      val fallback = choices.head
+      val rec_exp   = Mux(typeA.sig === 2.U || typeW.sig === 2.U, nsm.map(_._2).getOrElse(fallback._2),
+                                                                  n44.map(_._2).getOrElse(fallback._2))
+      val shift_dir = Mux(typeA.sig === 2.U || typeW.sig === 2.U, nsm.map(_._3).getOrElse(fallback._3),
+                                                                  n44.map(_._3).getOrElse(fallback._3))
+      val rec_sig   = Mux(typeA.sig === 2.U || typeW.sig === 2.U, nsm.map(_._1).getOrElse(fallback._1),
+                                                                  n44.map(_._1).getOrElse(fallback._1))
+      MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(i * 2),
+        Mux(!shift_dir, peExpW(i * 2) -% rec_exp, peExpW(i * 2) +% rec_exp),
+        rec_sig, peIsNaN, peZeroW(i * 2))
+    }) else None
+
+    val out1_toRec = if (config.needsOut1) Some({
+      val singleOut = config.modesSupported.find(_.numOutputs == 1).get
+      val prodW = singleOut.outTotalWidth
+      val n = normalize(out_pe(prodW - 1, 0), productFmt.sig - 1, prodW)
+      MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(0),
+        Mux(!n._3, peExpW(0) -% n._2, peExpW(0) +% n._2),
+        n._1, peIsNaN, peZeroW(0))
+    }) else None
+
+    def pipe[T <: chisel3.Data](sig: T, n: Int): T =
+      (0 until n).foldLeft(sig)((s, _) => RegNext(s))
+
+    for (i <- 0 until config.numActiveOutputLanes) {
+      val rawIn: RawFloat = (config.needsOut4, config.needsOut2, config.needsOut1) match {
+        case (true, true, true) =>
+          val raw4 = resize(out4_toRec.get(i), productFmt, cType)
+          val raw2 = resize(out2_toRec.get(i / 2), productFmt, cType)
+          val raw1 = resize(out1_toRec.get, productFmt, cType)
+          val sel = Wire(new RawFloat(cType.exp, cType.sig))
+          when (io.mode.numOutputs === 1.U) { sel := raw1 }
+            .elsewhen (io.mode.numOutputs === 2.U) { sel := raw2 }
+            .otherwise { sel := raw4 }
+          sel
+        case (true, false, true) =>
+          val raw4 = resize(out4_toRec.get(i), productFmt, cType)
+          val raw1 = resize(out1_toRec.get, productFmt, cType)
+          val sel = Wire(new RawFloat(cType.exp, cType.sig))
+          when (io.mode.numOutputs === 1.U) { sel := raw1 } .otherwise { sel := raw4 }
+          sel
+        case (true, true, false) =>
+          val raw4 = resize(out4_toRec.get(i), productFmt, cType)
+          val raw2 = resize(out2_toRec.get(i / 2), productFmt, cType)
+          val sel = Wire(new RawFloat(cType.exp, cType.sig))
+          when (io.mode.numOutputs === 2.U) { sel := raw2 } .otherwise { sel := raw4 }
+          sel
+        case (false, true, true) =>
+          val raw2 = resize(out2_toRec.get(i / 2), productFmt, cType)
+          val raw1 = resize(out1_toRec.get, productFmt, cType)
+          val sel = Wire(new RawFloat(cType.exp, cType.sig))
+          when (io.mode.numOutputs === 1.U) { sel := raw1 } .otherwise { sel := raw2 }
+          sel
+        case (true, false, false) => resize(out4_toRec.get(i), productFmt, cType)
+        case (false, true, false) => resize(out2_toRec.get(i / 2), productFmt, cType)
+        case (false, false, true) => resize(out1_toRec.get, productFmt, cType)
+        case _ => throw new IllegalStateException("MxFpMul default path: no needsOut*")
+      }
+      val add = Module(new hardfloatHelper.MxMulAddRecFN(cType.exp, cType.sig))
+      add.io.roundingMode := hardfloat.consts.round_near_even
+      add.io.detectTininess := hardfloat.consts.tininess_afterRounding
+      add.io.a := pipe(rawIn, preAddRegs)
+      add.io.c := pipe(recIn_c(i), preAddRegs)
+      outputs(i) := (if (addLatency >= 1) RegNext(add.io.out) else add.io.out)
     }
   }
 
