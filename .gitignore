@@ -1,5 +1,4 @@
-.mill/out/
-.mill/.bsp
+out/
 generated*
 .bsp
 .idea

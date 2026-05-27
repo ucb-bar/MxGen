@@ -14,11 +14,10 @@ scalacOptions:
   - -unchecked
   - -language:reflectiveCalls
 mainClass: mxgen.Main
-# Sources live at <mxgen>/src/main/scala so sbt (which only walks
-# <mxgen>/src/main/scala) sees them directly. mill workspace lives in
-# this .mill/ subdir so sbt's HiddenFileFilter skips out/, test/, etc.
+# Main.scala lives in elab/ (kept out of src/main/scala so sbt — which is
+# pointed at <mxgen>/src/main/scala — does not pick it up for elaboration).
 sources:
-  - ../src/main/scala
+  - src/main/scala
   - elab
 resources:
-  - ../src/main/resources
+  - src/main/resources

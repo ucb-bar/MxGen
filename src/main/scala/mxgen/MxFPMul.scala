@@ -7,8 +7,6 @@ import mxgen.hardfloat._
 class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends Module {
   require(latency >= 0 && latency <= 2,
     s"MxFpMul: latency must be 0, 1, or 2 (got $latency)")
-  println("Creating MxFpMul with product precision: " + config.productFormat + " and acc precision: " + config.accFormat + s" (latency=$latency)")
-  println(config.describe)
 
   val cType        = config.accFormat
   val productFmt   = config.productFormat
