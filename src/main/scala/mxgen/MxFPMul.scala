@@ -291,33 +291,21 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
 }
 
 object MxPEOutToRaw {
+  // Ported from gemmini inline commit 3fbd243 "fix subnormal handling for narrow
+  // acc/prod precisions". The previous version renormalized expIn==0 inputs via
+  // CLZ on fractIn, which produced wrong sExp/sig for narrow precisions where the
+  // product is already normalized by normalize() upstream.
   def apply(expWidth: Int, sigWidth: Int, sign: UInt, exp: UInt, sig: UInt, inputNaN: Bool, inputZero: Bool): RawFloat = {
     val expIn = exp(expWidth, 0)
     val fractIn = sig(sigWidth-2, 0)
 
-    val isZeroExpIn = (expIn === 0.U)
-    val isZeroFractIn = (fractIn === 0.U)
-
-    val normDist = countLeadingZeros(fractIn)
-    val subnormFract = if (sigWidth > 2) {
-      (fractIn << normDist) (sigWidth - 3, 0) << 1
-    } else {
-      0.U
-    }
-    val adjustedExp =
-      Mux(isZeroExpIn,
-        normDist ^ ((BigInt(1) << (expWidth + 1)) - 1).U,
-        expIn
-      ) + ((BigInt(1) << (expWidth - 1)).U
-        | Mux(isZeroExpIn, 2.U, 1.U))
-
-    val isZero = isZeroExpIn && isZeroFractIn
+    val adjustedExp = expIn + ((BigInt(1) << (expWidth - 1)).U | 1.U)
     val isSpecial = adjustedExp(expWidth, expWidth - 1) === 3.U
 
     val satExp  = (BigInt(3) << (expWidth - 1)).U((expWidth + 1).W)
     val satFrac = ((BigInt(1) << (sigWidth - 1)) - 2).U((sigWidth - 1).W)
-    val saturate     = isSpecial && !inputNaN
-    val effectiveZero = (isZero || inputZero) && !inputNaN
+    val saturate      = isSpecial && !inputNaN
+    val effectiveZero = inputZero && !inputNaN
 
     val out = Wire(new RawFloat(expWidth, sigWidth))
     out.isNaN  := inputNaN
@@ -325,7 +313,7 @@ object MxPEOutToRaw {
     out.isZero := effectiveZero
     out.sign   := sign
     out.sExp   := Mux(inputNaN || saturate, satExp, adjustedExp(expWidth, 0)).zext
-    out.sig    := 0.U(1.W) ## !effectiveZero ## Mux(inputNaN || saturate, satFrac, Mux(isZeroExpIn, subnormFract, fractIn))
+    out.sig    := 0.U(1.W) ## !effectiveZero ## Mux(inputNaN || saturate, satFrac, fractIn)
     out
   }
 }
