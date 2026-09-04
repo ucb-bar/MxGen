@@ -39,6 +39,18 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
   val peSignW = core.io.peSign
   val peZeroW = core.io.peIsZero
   val peIsNaN = core.io.peIsNaN
+  val expSignedW = core.io.expSignedRaw
+
+  // A product must flush to zero when its post-normalization magnitude rounds to zero in the
+  // accumulator format (otherwise the exponent subtract wraps and saturates to Inf). Under RNE
+  // that boundary is HALF the smallest subnormal: a product in [1/2, 1) x smallest rounds UP to
+  // the smallest subnormal (kept), only below 1/2 x smallest rounds to zero. ACC_FLOOR is the
+  // smallest subnormal's biased exponent (product-format bias); flush strictly below ACC_FLOOR-1.
+  val ACC_FLOOR = productFmt.bias - cType.bias + 2 - cType.sig
+  def isUnderflow(expSigned: SInt, nExp: UInt, nDir: Bool): Bool = {
+    val trueExp = Mux(!nDir, expSigned - nExp.zext, expSigned + nExp.zext)
+    trueExp < (ACC_FLOOR - 1).S
+  }
 
   // latency=2: one reg before the adder + one reg inside MxPEAddRecFN.
   // fpnew maps `latency` directly to NumPipeRegs.
@@ -152,7 +164,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
                          nmx.map(_._1).getOrElse(fallback._1)))
       MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(i),
         Mux(!shift_dir, out_e(i) -% rec_exp, out_e(i) +% rec_exp),
-        rec_sig, peIsNaN, peZeroW(i))
+        rec_sig, peIsNaN, peZeroW(i) || isUnderflow(expSignedW(i), rec_exp, shift_dir))
     }) else None
 
     val out2Pairs = config.modesSupported.filter(_.numOutputs == 2)
@@ -175,7 +187,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
                                                                   n44.map(_._1).getOrElse(fallback._1))
       MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(i * 2),
         Mux(!shift_dir, peExpW(i * 2) -% rec_exp, peExpW(i * 2) +% rec_exp),
-        rec_sig, peIsNaN, peZeroW(i * 2))
+        rec_sig, peIsNaN, peZeroW(i * 2) || isUnderflow(expSignedW(i * 2), rec_exp, shift_dir))
     }) else None
 
     val out1_toRec = if (config.needsOut1) Some({
@@ -184,7 +196,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
       val n = normalize(out_pe(prodW - 1, 0), productFmt.sig - 1, prodW)
       MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(0),
         Mux(!n._3, peExpW(0) -% n._2, peExpW(0) +% n._2),
-        n._1, peIsNaN, peZeroW(0))
+        n._1, peIsNaN, peZeroW(0) || isUnderflow(expSignedW(0), n._2, n._3))
     }) else None
 
     def pipe[T <: chisel3.Data](sig: T, n: Int): T =

@@ -28,6 +28,8 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
     val peIsZero = Output(Vec(config.numActiveOutputLanes, Bool()))
     val peIsNaN  = Output(Bool())
     val rawProduct = Output(UInt(config.outPE_width.W))
+    // Per-adder-lane SIGNED biased product exponent (pre-truncation), for underflow detection.
+    val expSignedRaw = Output(Vec(4, SInt((outExp + 3).W)))
   })
 
   val actType: MxTypeBundle = if (config.needsRuntimeActType) io.type_a else {
@@ -259,6 +261,7 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
   expAdder.io.in_a := inA_exp
   expAdder.io.in_w := inW_exp
   out_e := expAdder.io.out_exp
+  io.expSignedRaw := expAdder.io.out_exp_signed
 
   // MSB-align an n-bit raw mult slice into an accFormat.sig-bit field.
   def alignToAccSig(base: Int, n: Int): UInt =
