@@ -47,9 +47,21 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
   // the smallest subnormal (kept), only below 1/2 x smallest rounds to zero. ACC_FLOOR is the
   // smallest subnormal's biased exponent (product-format bias); flush strictly below ACC_FLOOR-1.
   val ACC_FLOOR = productFmt.bias - cType.bias + 2 - cType.sig
+  // The product path itself (productFmt, before rounding into the accumulator) can only represent
+  // down to its smallest subnormal-with-extended-range, whose biased exponent is
+  // 2 - productFmt.sig - productFmt.bias (empirically 2^-16 for the E4M3 (4,4) product format).
+  // Below that the exponent field wraps and MxPEOutToRaw reads it as OVERFLOW -> saturates to a
+  // huge value (~448). For a NARROW accumulator ACC_FLOOR-1 sits above this, so the RNE flush
+  // already fires first. But for a WIDE accumulator -- e.g. (8,8) at mesh row 15 -- ACC_FLOOR drops
+  // far below the wrap point (ACC_FLOOR-1 = -127), so a subnormal x subnormal product slips through
+  // unflushed and blows up (the fp8 128x128 requant corruption). Clamp the flush threshold so it
+  // never drops below the product-path wrap point; the flushed-to-zero value is negligible vs the
+  // O(1) running accumulator, so this stays bit-exact against the Spike reference.
+  val PROD_FLOOR  = 2 - productFmt.sig - productFmt.bias
+  val FLUSH_FLOOR = math.max(ACC_FLOOR - 1, PROD_FLOOR)
   def isUnderflow(expSigned: SInt, nExp: UInt, nDir: Bool): Bool = {
     val trueExp = Mux(!nDir, expSigned - nExp.zext, expSigned + nExp.zext)
-    trueExp < (ACC_FLOOR - 1).S
+    trueExp < FLUSH_FLOOR.S
   }
 
   // latency=2: one reg before the adder + one reg inside MxPEAddRecFN.
