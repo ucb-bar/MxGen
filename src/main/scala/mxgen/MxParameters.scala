@@ -296,6 +296,19 @@ object MxConfig {
     productFormat = MxFormat.Custom(4, 4),
     modesOverride = Some(List(MxPEParams.mode0, MxPEParams.mode4, MxPEParams.mode8)),
   )
+  // E5M2 variant: adds FP8_E5M2 (sig=3 -> existing mode4), widens the bus to E5M2's 16b minimum, and
+  // widens expAdderWidths for the 5-bit exp.
+  def mxGemminiE5M2 = {
+    val act = mxGemmini.actFormats + MxFormat.FP8_E5M2
+    val wei = mxGemmini.weiFormats + MxFormat.FP8_E5M2
+    mxGemmini.copy(
+      actFormats = act,
+      weiFormats = wei,
+      inActBusWidth = minBusWidth(act),
+      inWeiBusWidth = minBusWidth(wei),
+      expAdderWidths = Seq(5, 5, 5, 5),
+    )
+  }
 }
 
 // MX FLOAT BUNDLE
