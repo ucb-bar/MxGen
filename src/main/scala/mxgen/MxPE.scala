@@ -14,6 +14,32 @@ class MxPE(config: MxConfig, lut: Boolean) extends Module {
     val output = Output(UInt(config.outPE_width.W))
   })
 
+  if (config.hasMode9) {
+    // ---- Quad (16-MACU) datapath: one LaneMul per output lane. ----
+    // E4M3 is a dual format here, so in_a/in_w carry 2 significand slots.
+    val slotAW = config.inPE_act_totalWidth / 2
+    val slotWW = config.inPE_wei_totalWidth / 2
+    val actSlots = io.in_a.asTypeOf(Vec(2, UInt(slotAW.W)))
+    val weiSlots = io.in_w.asTypeOf(Vec(2, UInt(slotWW.W)))
+
+    val is4x4 = io.modeDecoded.actWidth === 4.U && io.modeDecoded.weiWidth === 4.U
+    val actM2 = io.modeDecoded.actWidth === 3.U
+    val weiM2 = io.modeDecoded.weiWidth === 3.U
+
+    // lane k = (act k/2) x (wei k%2)  ->  [a0w0, a0w1, a1w0, a1w1]
+    val laneOuts = (0 until 4).map { k =>
+      val lm = Module(new LaneMul(lut))
+      lm.io.act     := actSlots(k / 2).pad(4)
+      lm.io.wei     := weiSlots(k % 2).pad(4)
+      lm.io.is4x4   := is4x4
+      lm.io.actMode := actM2
+      lm.io.weiMode := weiM2
+      lm.io.enable  := io.enable
+      lm.io.out
+    }
+    io.output := VecInit((0 until 4).map(k => laneOuts(k).pad(config.laneWidths(k)))).asUInt
+  } else {
+
   val flexMults = Seq.fill(2,2){ Module(new MACU(lut)) }
   val outFM = Wire(Vec(4, UInt(config.multOutWidth.W)))
 
@@ -167,4 +193,5 @@ class MxPE(config: MxConfig, lut: Boolean) extends Module {
   } else {
     io.output := out4Packed
   }
+  } // end else (non-mode9 compact PE)
 }

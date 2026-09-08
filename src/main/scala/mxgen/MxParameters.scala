@@ -119,7 +119,21 @@ object MxPEParams {
     outTotalWidth = 8,
     numOutputs = 1
   )
-  val allModes: List[MxPEParams] = List(mode0, mode1, mode2, mode3, mode4, mode5, mode6, mode7, mode8)
+  // mode9 (M1): E4M3×E4M3 at 4 elements/cycle via the LUT path. 2 act × 2 wei -> 4 products, each a
+  // full 4×4 (4 MACUs) -> needs the 16-MACU array (M2). Shift is the mode8 4×4 pattern, shared by all
+  // 4 lanes. Selected only when lut_en is set (requiredPEMode); inert otherwise.
+  def mode9 = MxPEParams().copy(
+    actTotalWidth = 8,
+    weiTotalWidth = 8,
+    actWidth = 4,
+    weiWidth = 4,
+    weiInputs = 2,
+    actInputs = 2,
+    shift = Seq(Seq(4,2), Seq(2,0)),
+    outTotalWidth = 32,
+    numOutputs = 4
+  )
+  val allModes: List[MxPEParams] = List(mode0, mode1, mode2, mode3, mode4, mode5, mode6, mode7, mode8, mode9)
   val mxGemminiConfig: List[MxPEParams] = List(mode0, mode4, mode8)
 
   // The mode slot that handles a given (act significand width, wei significand
@@ -210,6 +224,10 @@ case class MxConfig (
   val needsOut2: Boolean = numOutputsValues.contains(2)
   val needsOut4: Boolean = numOutputsValues.contains(4)
   val numActiveOutputLanes: Int = numOutputsValues.max
+
+  // mode9 (E4M3 4-wide via the 16-MACU quad PE) present -> use the LaneMul quad datapath and treat
+  // E4M3 as a dual (2-element) format. Absent -> the compact 4-MACU MxPE, byte-identical to before.
+  val hasMode9: Boolean = modesSupported.contains(MxPEParams.mode9)
 
   val fixedActInputs: Option[Int] = {
     val s = modesSupported.map(_.actInputs).toSet
@@ -309,6 +327,18 @@ object MxConfig {
       expAdderWidths = Seq(5, 5, 5, 5),
     )
   }
+  // E4M3-LUT variant: adds mode9 so sig4 formats run 4-wide (2 act x 2 wei) via the 16-MACU quad PE.
+  // Bus widened to 16b (2 E4M3 = 16b; also fits 2xFP6=12, 2xFP4=8). sig4 formats become "dual" here.
+  // Both sig4 formats live here so mac_mx (routes sig4 -> this config) classifies each by its exponent:
+  //   E4M3 (exp4, 8-bit) and E2M3 (exp2, 6-bit). E2M3 is 4-wide-via-LUT only (no single path).
+  def mxGemminiE4M3Lut = mxGemmini.copy(
+    actFormats     = mxGemmini.actFormats + MxFormat.FP6_E2M3,
+    weiFormats     = mxGemmini.weiFormats + MxFormat.FP6_E2M3,
+    modesOverride  = Some(List(MxPEParams.mode0, MxPEParams.mode4, MxPEParams.mode8, MxPEParams.mode9)),
+    inActBusWidth  = 16,
+    inWeiBusWidth  = 16,
+    expAdderWidths = Seq(4, 4, 4, 4),
+  )
 }
 
 // MX FLOAT BUNDLE

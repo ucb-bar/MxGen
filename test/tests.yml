@@ -16,6 +16,12 @@
 - spec: mxgen.MxFpMul_MxGemmini_BF16Out_Spec
   label: MxGemmini (FP4+E3M2+E4M3)
 
+- spec: mxgen.LaneMulSpec
+  label: LaneMul primitive (4x4/3x3/2x2)
+
+- spec: mxgen.MxFpMul_MxGemminiE4M3Lut_Mode9_Spec
+  label: MxGemminiE4M3Lut mode9 (E4M3 4-wide)
+
 - spec: mxgen.MxFpMul_NoCross_BF16Out_Spec
   label: All Formats, No Cross
 
@@ -97,3 +103,6 @@
 
 - spec: mxgen.MxDotProduct_MxGemmini_Spec
   label: MxDotProduct — mxGemmini (numCores=4, lat=0)
+
+- spec: mxgen.MxFpMul_MxGemminiE4M3Lut_Mode9_E2M3_Spec
+  label: MxGemminiE4M3Lut mode9 (E2M3 4-wide)

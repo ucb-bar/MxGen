@@ -152,28 +152,36 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
     // configs like fp4Only (laneOutW=4).
     val out4Pairs = config.modesSupported.filter(_.numOutputs == 4)
                           .map(m => (m.actWidth, m.weiWidth)).toSet
+    val needSig44 = laneOutW >= 8 && out4Pairs.contains((4, 4))
     val needSig33 = laneOutW >= 6 && out4Pairs.contains((3, 3))
     val needSigMix = laneOutW >= 5 && (out4Pairs.contains((2, 3)) || out4Pairs.contains((3, 2)))
     val needSig22 = out4Pairs.contains((2, 2))
 
     val out4_toRec = if (config.needsOut4) Some(VecInit.tabulate(4) { i =>
       val base = i * laneOutW
+      val n44 = if (needSig44)  Some(normalize(out_pe(base + 7, base), productFmt.sig - 1, 8)) else None
       val n33 = if (needSig33)  Some(normalize(out_pe(base + 5, base), productFmt.sig - 1, 6)) else None
       val nmx = if (needSigMix) Some(normalize(out_pe(base + 4, base), productFmt.sig - 1, 5)) else None
       val n22 = if (needSig22)  Some(normalize(out_pe(base + 3, base), productFmt.sig - 1, 4)) else None
-      val choices = Seq(n33, nmx, n22).flatten
+      val choices = Seq(n44, n33, nmx, n22).flatten
       require(choices.nonEmpty, "MxFpMul default path: no 4-output product variant configured")
       val fallback = choices.head
-      def pick[T](pred: Bool, opt: Option[T], dflt: T): T = if (opt.isDefined) opt.get else dflt
-      val rec_exp   = Mux(typeA.sig === 2.U && typeW.sig === 2.U, n22.map(_._2).getOrElse(fallback._2),
-                       Mux(typeA.sig === 3.U && typeW.sig === 3.U, n33.map(_._2).getOrElse(fallback._2),
-                         nmx.map(_._2).getOrElse(fallback._2)))
-      val shift_dir = Mux(typeA.sig === 2.U && typeW.sig === 2.U, n22.map(_._3).getOrElse(fallback._3),
-                       Mux(typeA.sig === 3.U && typeW.sig === 3.U, n33.map(_._3).getOrElse(fallback._3),
-                         nmx.map(_._3).getOrElse(fallback._3)))
-      val rec_sig   = Mux(typeA.sig === 2.U && typeW.sig === 2.U, n22.map(_._1).getOrElse(fallback._1),
-                       Mux(typeA.sig === 3.U && typeW.sig === 3.U, n33.map(_._1).getOrElse(fallback._1),
-                         nmx.map(_._1).getOrElse(fallback._1)))
+      // (4,4) E4M3 -> 8-bit product; (3,3) -> 6-bit; mixed -> 5-bit; (2,2) -> 4-bit.
+      val is44 = typeA.sig === 4.U && typeW.sig === 4.U
+      val is22 = typeA.sig === 2.U && typeW.sig === 2.U
+      val is33 = typeA.sig === 3.U && typeW.sig === 3.U
+      val rec_exp   = Mux(is44, n44.map(_._2).getOrElse(fallback._2),
+                       Mux(is22, n22.map(_._2).getOrElse(fallback._2),
+                       Mux(is33, n33.map(_._2).getOrElse(fallback._2),
+                         nmx.map(_._2).getOrElse(fallback._2))))
+      val shift_dir = Mux(is44, n44.map(_._3).getOrElse(fallback._3),
+                       Mux(is22, n22.map(_._3).getOrElse(fallback._3),
+                       Mux(is33, n33.map(_._3).getOrElse(fallback._3),
+                         nmx.map(_._3).getOrElse(fallback._3))))
+      val rec_sig   = Mux(is44, n44.map(_._1).getOrElse(fallback._1),
+                       Mux(is22, n22.map(_._1).getOrElse(fallback._1),
+                       Mux(is33, n33.map(_._1).getOrElse(fallback._1),
+                         nmx.map(_._1).getOrElse(fallback._1))))
       MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(i),
         Mux(!shift_dir, out_e(i) -% rec_exp, out_e(i) +% rec_exp),
         rec_sig, peIsNaN, peZeroW(i) || isUnderflow(expSignedW(i), rec_exp, shift_dir))

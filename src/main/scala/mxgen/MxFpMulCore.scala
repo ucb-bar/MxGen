@@ -119,10 +119,14 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
   val nanA = WireDefault(false.B)
   val nanW = WireDefault(false.B)
 
-  val dualActFormats   = config.actFormats.filter(_.sigWidth < 4).toSeq.sortBy(_.bitWidth)
-  val singleActFormats = config.actFormats.filter(_.sigWidth >= 4).toSeq.sortBy(_.bitWidth)
-  val dualWeiFormats   = config.weiFormats.filter(_.sigWidth < 4).toSeq.sortBy(_.bitWidth)
-  val singleWeiFormats = config.weiFormats.filter(_.sigWidth >= 4).toSeq.sortBy(_.bitWidth)
+  // In a mode9 (quad-PE) config every format is packed 2-per-bus as a "dual" element (E4M3 included),
+  // so the single-element classify path is unused. Otherwise sig>=4 (E4M3) uses the single path.
+  val dualPred: MxFormat => Boolean   = if (config.hasMode9) (_ => true) else (_.sigWidth < 4)
+  val singlePred: MxFormat => Boolean = if (config.hasMode9) (_ => false) else (_.sigWidth >= 4)
+  val dualActFormats   = config.actFormats.filter(dualPred).toSeq.sortBy(_.bitWidth)
+  val singleActFormats = config.actFormats.filter(singlePred).toSeq.sortBy(_.bitWidth)
+  val dualWeiFormats   = config.weiFormats.filter(dualPred).toSeq.sortBy(_.bitWidth)
+  val singleWeiFormats = config.weiFormats.filter(singlePred).toSeq.sortBy(_.bitWidth)
 
   // --- Activation classifier -------------------------------------------------
   {
@@ -273,12 +277,15 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
     val base  = laneIdx * laneW
     val pairs = config.modesSupported.filter(_.numOutputs == 4)
                       .map(m => (m.actWidth, m.weiWidth)).toSet
+    val need8 = laneW >= 8 && pairs.contains((4, 4))
     val need6 = laneW >= 6 && pairs.contains((3, 3))
     val need5 = laneW >= 5 && (pairs.contains((2, 3)) || pairs.contains((3, 2)))
     val s4    = alignToAccSig(base, 4)
+    val m8    = if (need8) Some(alignToAccSig(base, 8)) else None
     val m6    = if (need6) Some(alignToAccSig(base, 6)) else None
     val m5    = if (need5) Some(alignToAccSig(base, 5)) else None
-    (m6, m5) match {
+    // Base select among the {2x2->4, 3x3->6, mixed->5} products, then override with the 4x4->8 case.
+    val baseSel: UInt = (m6, m5) match {
       case (Some(v6), Some(v5)) =>
         Mux(actType.sig === 2.U && weiType.sig === 2.U, s4,
           Mux(actType.sig === 3.U && weiType.sig === 3.U, v6, v5))
@@ -287,6 +294,10 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
       case (None, Some(v5)) =>
         Mux(actType.sig === 2.U && weiType.sig === 2.U, s4, v5)
       case (None, None) => s4
+    }
+    m8 match {
+      case Some(v8) => Mux(actType.sig === 4.U && weiType.sig === 4.U, v8, baseSel)
+      case None     => baseSel
     }
   }
 

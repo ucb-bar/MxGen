@@ -46,7 +46,7 @@ class MxClassifiedFp(format: MxFormat) extends Bundle {
 }
 
 object requiredPEMode {
-  def apply(a: MxTypeBundle, w: MxTypeBundle): mxMode = {
+  def apply(a: MxTypeBundle, w: MxTypeBundle, lutEn: Bool = false.B): mxMode = {
     val key = Cat(a.sig, w.sig)
     val idx = MuxLookup(key, 0.U) (Seq(
       Cat(2.U(3.W), 2.U(3.W)) -> 0.U,
@@ -60,7 +60,10 @@ object requiredPEMode {
       Cat(4.U(3.W), 4.U(3.W)) -> 8.U
     ))
 
-    mxModeDecode(idx)
+    // M1: E4M3×E4M3 (both sig=4) with runtime LUT enabled -> mode9 (4-wide LUT path); else mode8.
+    val idxSel = Mux(lutEn && a.sig === 4.U && w.sig === 4.U, 9.U, idx)
+
+    mxModeDecode(idxSel)
   }
 }
 
