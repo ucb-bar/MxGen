@@ -85,6 +85,8 @@ object Main extends App {
     "fp6"       -> MxConfig.fp6,
     "fp8"       -> MxConfig.fp8,
     "mxgemmini" -> MxConfig.mxGemmini,
+    "mxgemmini-all" -> MxConfig.mxGemminiAll,
+    "mxgemmini-e5m2" -> MxConfig.mxGemminiE5M2,
     "all"       -> MxConfig.all,
     // All formats on both sides, but PE modes restricted to same-format pairs only.
     "no-cross"  -> MxConfig(

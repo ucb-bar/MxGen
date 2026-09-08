@@ -229,6 +229,20 @@ case class MxConfig (
   // E4M3 as a dual (2-element) format. Absent -> the compact 4-MACU MxPE, byte-identical to before.
   val hasMode9: Boolean = modesSupported.contains(MxPEParams.mode9)
 
+  // Decoded exponent-bus width, decoupled from the raw operand storage width. Max of the historical
+  // (inBusWidth - inPE_totalWidth) -- preserves existing configs -- and what the formats need: dual =
+  // 2*maxExp of dual formats, single = maxExp of single formats. Lets E5M2 (exp5) coexist with mode9.
+  private def dualExpNeed(fs: Set[MxFormat]): Int = {
+    val dual = if (hasMode9) fs else fs.filter(_.sigWidth < 4)
+    if (dual.isEmpty) 0 else 2 * dual.map(_.expWidth).max
+  }
+  private def sngExpNeed(fs: Set[MxFormat]): Int = {
+    val sng = if (hasMode9) Set.empty[MxFormat] else fs.filter(_.sigWidth >= 4)
+    if (sng.isEmpty) 0 else sng.map(_.expWidth).max
+  }
+  val inActExpBusWidth: Int = Seq(inActBusWidth - inPE_act_totalWidth, dualExpNeed(actFormats), sngExpNeed(actFormats)).max
+  val inWeiExpBusWidth: Int = Seq(inWeiBusWidth - inPE_wei_totalWidth, dualExpNeed(weiFormats), sngExpNeed(weiFormats)).max
+
   val fixedActInputs: Option[Int] = {
     val s = modesSupported.map(_.actInputs).toSet
     if (s.size == 1) Some(s.head) else None
@@ -327,17 +341,16 @@ object MxConfig {
       expAdderWidths = Seq(5, 5, 5, 5),
     )
   }
-  // E4M3-LUT variant: adds mode9 so sig4 formats run 4-wide (2 act x 2 wei) via the 16-MACU quad PE.
-  // Bus widened to 16b (2 E4M3 = 16b; also fits 2xFP6=12, 2xFP4=8). sig4 formats become "dual" here.
-  // Both sig4 formats live here so mac_mx (routes sig4 -> this config) classifies each by its exponent:
-  //   E4M3 (exp4, 8-bit) and E2M3 (exp2, 6-bit). E2M3 is 4-wide-via-LUT only (no single path).
-  def mxGemminiE4M3Lut = mxGemmini.copy(
-    actFormats     = mxGemmini.actFormats + MxFormat.FP6_E2M3,
-    weiFormats     = mxGemmini.weiFormats + MxFormat.FP6_E2M3,
+  // All-formats config: every MX format coexists {FP4, E3M2, E2M3, E4M3, E5M2}, modes {0,4,8,9}.
+  // mode9 -> sig4 formats (E4M3/E2M3) run 4-wide via the 16-MACU quad PE; E5M2 (exp5) rides mode4 with
+  // expAdderWidths=5. The 5-bit exp slots fit thanks to inActExpBusWidth decoupling exp from bus width.
+  def mxGemminiAll = mxGemmini.copy(
+    actFormats     = mxGemmini.actFormats + MxFormat.FP6_E2M3 + MxFormat.FP8_E5M2,
+    weiFormats     = mxGemmini.weiFormats + MxFormat.FP6_E2M3 + MxFormat.FP8_E5M2,
     modesOverride  = Some(List(MxPEParams.mode0, MxPEParams.mode4, MxPEParams.mode8, MxPEParams.mode9)),
     inActBusWidth  = 16,
     inWeiBusWidth  = 16,
-    expAdderWidths = Seq(4, 4, 4, 4),
+    expAdderWidths = Seq(5, 5, 5, 5),
   )
 }
 

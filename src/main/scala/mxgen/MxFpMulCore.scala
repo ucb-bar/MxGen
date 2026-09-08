@@ -110,8 +110,8 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
 
   val inA_pe   = WireDefault(0.U(config.inPE_act_totalWidth.W))
   val inW_pe   = WireDefault(0.U(config.inPE_wei_totalWidth.W))
-  val inA_exp  = WireDefault(0.U((config.inActBusWidth - config.inPE_act_totalWidth).W))
-  val inW_exp  = WireDefault(0.U((config.inWeiBusWidth - config.inPE_wei_totalWidth).W))
+  val inA_exp  = WireDefault(0.U(config.inActExpBusWidth.W))
+  val inW_exp  = WireDefault(0.U(config.inWeiExpBusWidth.W))
   val inA_sign = WireDefault(0.U(2.W))
   val inW_sign = WireDefault(0.U(2.W))
   val in_a_mask= WireDefault("b11".U(2.W))
@@ -119,10 +119,13 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
   val nanA = WireDefault(false.B)
   val nanW = WireDefault(false.B)
 
-  // In a mode9 (quad-PE) config every format is packed 2-per-bus as a "dual" element (E4M3 included),
-  // so the single-element classify path is unused. Otherwise sig>=4 (E4M3) uses the single path.
-  val dualPred: MxFormat => Boolean   = if (config.hasMode9) (_ => true) else (_.sigWidth < 4)
-  val singlePred: MxFormat => Boolean = if (config.hasMode9) (_ => false) else (_.sigWidth >= 4)
+  // Dual (2-per-bus) path carries every format on a mode9 build (E4M3 included, for the 4-wide quad mode9).
+  // The single (1-per-bus) path also stays for E4M3 (sig4,exp4) so E4M3-single (mode8, no lut) still decodes
+  // on a mode9 build; E2M3 (sig4,exp2) is quad-only so it is NOT on the single path. Runtime mode picks.
+  val dualPred: MxFormat => Boolean   = if (config.hasMode9) (_ => true)
+                                        else (_.sigWidth < 4)
+  val singlePred: MxFormat => Boolean = if (config.hasMode9) (f => f.sigWidth >= 4 && f.expWidth >= 4)
+                                        else (_.sigWidth >= 4)
   val dualActFormats   = config.actFormats.filter(dualPred).toSeq.sortBy(_.bitWidth)
   val singleActFormats = config.actFormats.filter(singlePred).toSeq.sortBy(_.bitWidth)
   val dualWeiFormats   = config.weiFormats.filter(dualPred).toSeq.sortBy(_.bitWidth)
@@ -131,9 +134,9 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
   // --- Activation classifier -------------------------------------------------
   {
     val slotSigDual  = config.inPE_act_totalWidth / 2
-    val slotExpDual  = (config.inActBusWidth - config.inPE_act_totalWidth) / 2
+    val slotExpDual  = config.inActExpBusWidth / 2
     val slotSigSng   = config.inPE_act_totalWidth
-    val slotExpSng   = config.inActBusWidth - config.inPE_act_totalWidth
+    val slotExpSng   = config.inActExpBusWidth
 
     val dualRes = if (dualActFormats.nonEmpty) Some(
       (0 until 2).map { i =>
@@ -171,7 +174,9 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
         in_a_mask := sngMask.get
         nanA      := sngNaN.get
       case (Some(_), Some(_)) =>
-        val selSingle = actType.sig === 4.U
+        // sig4 AND single-throughput mode (mode8, actInputs=1) = E4M3-single; else dual (E4M3-quad mode9 or
+        // any sig<4 format). On non-mode9 configs E4M3 is the only sig4/mode8 so this matches the old sig===4.
+        val selSingle = actType.sig === 4.U && modeWire.actInputs === 1.U
         inA_pe    := Mux(selSingle, sngSig.get, dualSig.get)
         inA_exp   := Mux(selSingle, sngExp.get, dualExp.get)
         inA_sign  := Mux(selSingle, sngSign.get, dualSign.get)
@@ -185,9 +190,9 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
   // --- Weight classifier -----------------------------------------------------
   {
     val slotSigDual = config.inPE_wei_totalWidth / 2
-    val slotExpDual = (config.inWeiBusWidth - config.inPE_wei_totalWidth) / 2
+    val slotExpDual = config.inWeiExpBusWidth / 2
     val slotSigSng  = config.inPE_wei_totalWidth
-    val slotExpSng  = config.inWeiBusWidth - config.inPE_wei_totalWidth
+    val slotExpSng  = config.inWeiExpBusWidth
 
     val dualRes = if (dualWeiFormats.nonEmpty) Some(
       (0 until 2).map { i =>
@@ -225,7 +230,7 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
         in_w_mask := sngMask.get
         nanW      := sngNaN.get
       case (Some(_), Some(_)) =>
-        val selSingle = weiType.sig === 4.U
+        val selSingle = weiType.sig === 4.U && modeWire.weiInputs === 1.U
         inW_pe    := Mux(selSingle, sngSig.get, dualSig.get)
         inW_exp   := Mux(selSingle, sngExp.get, dualExp.get)
         inW_sign  := Mux(selSingle, sngSign.get, dualSign.get)
@@ -253,8 +258,8 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
 
   val out_e = Wire(UInt(totalAdderWidth.W))
   val expAdder = Module(new MxExp(
-    inA_exp_width = config.inActBusWidth - config.inPE_act_totalWidth,
-    inW_exp_width = config.inWeiBusWidth - config.inPE_wei_totalWidth,
+    inA_exp_width = config.inActExpBusWidth,
+    inW_exp_width = config.inWeiExpBusWidth,
     outWidth      = totalAdderWidth,
     elemW         = config.expAdderWidths,
     outTypes      = Seq(productFmt, productFmt, productFmt, productFmt)))
