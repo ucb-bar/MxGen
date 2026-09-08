@@ -352,6 +352,24 @@ object MxConfig {
     inWeiBusWidth  = 16,
     expAdderWidths = Seq(5, 5, 5, 5),
   )
+
+  // Single-format builds: the PE elaborates ONLY that format's decode + mode(s); everything else gated.
+  // modesSupported auto-derives from the format (FP4->mode0, E3M2/E5M2->mode4); the mode9 quad formats
+  // (E2M3, E4M3) list modes explicitly. Bus width comes from the operand descriptor at mac_mx.
+  def e3m2Only = MxConfig(Set(MxFormat.FP6_E3M2), Set(MxFormat.FP6_E3M2),
+    productFormat = MxFormat.Custom(4, 4),
+    inActBusWidth = 12, inWeiBusWidth = 12, expAdderWidths = Seq(3, 3, 3, 3))
+  def e2m3Only = MxConfig(Set(MxFormat.FP6_E2M3), Set(MxFormat.FP6_E2M3),
+    productFormat = MxFormat.Custom(4, 4),
+    modesOverride = Some(List(MxPEParams.mode8, MxPEParams.mode9)),
+    inActBusWidth = 12, inWeiBusWidth = 12, expAdderWidths = Seq(4, 4, 4, 4))
+  def e4m3Only = MxConfig(Set(MxFormat.FP8_E4M3), Set(MxFormat.FP8_E4M3),
+    productFormat = MxFormat.Custom(4, 4),
+    modesOverride = Some(List(MxPEParams.mode8, MxPEParams.mode9)),
+    inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(4, 4, 4, 4))
+  def e5m2Only = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP8_E5M2),
+    productFormat = MxFormat.Custom(4, 4),
+    inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
 }
 
 // MX FLOAT BUNDLE
