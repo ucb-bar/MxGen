@@ -370,6 +370,28 @@ object MxConfig {
   def e5m2Only = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP8_E5M2),
     productFormat = MxFormat.Custom(4, 4),
     inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
+
+  // Asymmetric build: FP4 activation x FP6_E3M2 weight -> mode1 (4 products/PE). actFormats/weiFormats
+  // differ, so modesSupported derives to just [mode1]; the act bus stays fp4-narrow.
+  def asymFp4Fp6 = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP6_E3M2),
+    productFormat = MxFormat.Custom(4, 4),
+    inActBusWidth = 8, inWeiBusWidth = 12, expAdderWidths = Seq(3, 3, 3, 3))
+
+  // Opposite asymmetric build: FP6_E3M2 activation x FP4 weight -> mode3. Weight bus stays fp4-narrow.
+  def asymFp6Fp4 = MxConfig(Set(MxFormat.FP6_E3M2), Set(MxFormat.FP4),
+    productFormat = MxFormat.Custom(4, 4),
+    inActBusWidth = 12, inWeiBusWidth = 8, expAdderWidths = Seq(3, 3, 3, 3))
+
+  // Asymmetric build: FP8_E5M2 activation x FP4 weight -> mode3 (sig3 x sig2). Same 4-product bandwidth;
+  // E5M2's exp5 needs the 5-bit exp adders, act bus is E5M2's 16b minimum.
+  def asymE5M2Fp4 = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP4),
+    productFormat = MxFormat.Custom(4, 4),
+    inActBusWidth = 16, inWeiBusWidth = 8, expAdderWidths = Seq(5, 5, 5, 5))
+
+  // Opposite: FP4 activation x FP8_E5M2 weight -> mode1. E5M2 weight bus is its 16b minimum.
+  def asymFp4E5M2 = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP8_E5M2),
+    productFormat = MxFormat.Custom(4, 4),
+    inActBusWidth = 8, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
 }
 
 // MX FLOAT BUNDLE

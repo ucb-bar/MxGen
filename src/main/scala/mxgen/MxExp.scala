@@ -30,14 +30,14 @@ class MxExp(inA_exp_width: Int, inW_exp_width: Int, outWidth: Int, elemW: Seq[In
   val adders = elemW.zipWithIndex.map{ case (w, i) =>
     val adder = Module(new AddBit(w, outTypes(i)))
     if (w > inA_exp_width/2) {
-      adder.io.a := Mux(io.modeDecoded.actInputs === 1.U, in1_a(0)(w-1, 0).asSInt, in2_a(i/2).asSInt.pad(w))
+      adder.io.a := Mux(io.modeDecoded.actInputs === 1.U, in1_a(0).pad(w)(w-1, 0).asSInt, in2_a(i/2).asSInt.pad(w))
     } else {
-      adder.io.a := Mux(io.modeDecoded.actInputs === 1.U, in1_a(0)(w-1, 0).asSInt, in2_a(i/2)(w-1, 0).asSInt)
+      adder.io.a := Mux(io.modeDecoded.actInputs === 1.U, in1_a(0).pad(w)(w-1, 0).asSInt, in2_a(i/2)(w-1, 0).asSInt)
     }
     if (w > inW_exp_width/2) {
-      adder.io.b := Mux(io.modeDecoded.weiInputs === 1.U, in1_w(0)(w-1, 0).asSInt, in2_w(i%2).asSInt.pad(w))
+      adder.io.b := Mux(io.modeDecoded.weiInputs === 1.U, in1_w(0).pad(w)(w-1, 0).asSInt, in2_w(i%2).asSInt.pad(w))
     } else {
-      adder.io.b := Mux(io.modeDecoded.weiInputs === 1.U, in1_w(0)(w-1, 0).asSInt, in2_w(i%2)(w-1, 0).asSInt)
+      adder.io.b := Mux(io.modeDecoded.weiInputs === 1.U, in1_w(0).pad(w)(w-1, 0).asSInt, in2_w(i%2)(w-1, 0).asSInt)
     }
     adder.io.enable := laneMask(i) && io.mask_a(i/2) && io.mask_w(i%2)
     adder
