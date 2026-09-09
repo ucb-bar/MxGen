@@ -133,7 +133,34 @@ object MxPEParams {
     outTotalWidth = 32,
     numOutputs = 4
   )
-  val allModes: List[MxPEParams] = List(mode0, mode1, mode2, mode3, mode4, mode5, mode6, mode7, mode8, mode9)
+  // mode10 (M1): E4M3-quad activation x small weight (fp4 or e3m2), 2 act x 2 wei -> 4 products via the
+  // LaneMul asymmetric 4xN path. weiWidth=3 sizes the small side for e3m2; the 3-bit M2 add is inert for
+  // fp4 (its 3rd sig bit is always 0), so this one mode covers both (4,2) and (4,3). lut_en only.
+  def mode10 = MxPEParams().copy(
+    actTotalWidth = 8,
+    weiTotalWidth = 6,
+    actWidth = 4,
+    weiWidth = 3,
+    weiInputs = 2,
+    actInputs = 2,
+    shift = Seq(Seq(4,2), Seq(2,0)),
+    outTotalWidth = 32,   // 8-bit lanes: LaneMul.io.out is 8b, so lane width must be 8 (product uses low <=7)
+    numOutputs = 4
+  )
+  // mode11 (M1): small activation (fp4 or e3m2) x E4M3-quad weight -- mirror of mode10 (E4M3 is the weight).
+  // actWidth=3 sizes the small side for e3m2, inert for fp4; covers both (2,4) and (3,4). lut_en only.
+  def mode11 = MxPEParams().copy(
+    actTotalWidth = 6,
+    weiTotalWidth = 8,
+    actWidth = 3,
+    weiWidth = 4,
+    weiInputs = 2,
+    actInputs = 2,
+    shift = Seq(Seq(4,2), Seq(2,0)),
+    outTotalWidth = 32,
+    numOutputs = 4
+  )
+  val allModes: List[MxPEParams] = List(mode0, mode1, mode2, mode3, mode4, mode5, mode6, mode7, mode8, mode9, mode10, mode11)
   val mxGemminiConfig: List[MxPEParams] = List(mode0, mode4, mode8)
 
   // The mode slot that handles a given (act significand width, wei significand
@@ -225,9 +252,11 @@ case class MxConfig (
   val needsOut4: Boolean = numOutputsValues.contains(4)
   val numActiveOutputLanes: Int = numOutputsValues.max
 
-  // mode9 (E4M3 4-wide via the 16-MACU quad PE) present -> use the LaneMul quad datapath and treat
-  // E4M3 as a dual (2-element) format. Absent -> the compact 4-MACU MxPE, byte-identical to before.
-  val hasMode9: Boolean = modesSupported.contains(MxPEParams.mode9)
+  // Any quad mode with a 4-bit operand (mode9 E4M3xE4M3, or the mixed mode10/mode11 E4M3-quad x small) ->
+  // use the LaneMul quad datapath and treat the 4-bit format as dual (2-element). Absent -> the compact
+  // 4-MACU MxPE, byte-identical to before.
+  val hasMode9: Boolean = modesSupported.exists(m =>
+    m.numOutputs == 4 && (m.actWidth == 4 || m.weiWidth == 4))
 
   // Decoded exponent-bus width, decoupled from the raw operand storage width. Max of the historical
   // (inBusWidth - inPE_totalWidth) -- preserves existing configs -- and what the formats need: dual =
@@ -403,6 +432,53 @@ object MxConfig {
   def asymE3M2E5M2 = MxConfig(Set(MxFormat.FP6_E3M2), Set(MxFormat.FP8_E5M2),
     productFormat = MxFormat.Custom(4, 4),
     inActBusWidth = 12, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
+
+  // Mixed quad: FP8_E4M3 activation (via LUT, 2/lane) x FP4 weight -> mode10, 4 products.
+  def asymE4M3Fp4 = MxConfig(Set(MxFormat.FP8_E4M3), Set(MxFormat.FP4),
+    productFormat = MxFormat.Custom(4, 4),
+    modesOverride = Some(List(MxPEParams.mode10)),
+    inActBusWidth = 16, inWeiBusWidth = 8, expAdderWidths = Seq(4, 4, 4, 4))
+
+  // Opposite mixed quad: FP4 activation x FP8_E4M3 weight (via LUT, 2/lane) -> mode11, 4 products.
+  def asymFp4E4M3 = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP8_E4M3),
+    productFormat = MxFormat.Custom(4, 4),
+    modesOverride = Some(List(MxPEParams.mode11)),
+    inActBusWidth = 8, inWeiBusWidth = 16, expAdderWidths = Seq(4, 4, 4, 4))
+
+  // E4M3-quad x sig3 (both LUT-deprojected). mode10 (E4M3 act) / mode11 (E4M3 wei); weiWidth/actWidth=3
+  // covers e3m2 and e5m2. E5M2 pairs need per-operand altfmt (both fp8 code0) + exp5 adders.
+  def asymE4M3E3M2 = MxConfig(Set(MxFormat.FP8_E4M3), Set(MxFormat.FP6_E3M2),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode10)),
+    inActBusWidth = 16, inWeiBusWidth = 12, expAdderWidths = Seq(4, 4, 4, 4))
+  def asymE4M3E5M2 = MxConfig(Set(MxFormat.FP8_E4M3), Set(MxFormat.FP8_E5M2),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode10)),
+    inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
+  def asymE3M2E4M3 = MxConfig(Set(MxFormat.FP6_E3M2), Set(MxFormat.FP8_E4M3),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode11)),
+    inActBusWidth = 12, inWeiBusWidth = 16, expAdderWidths = Seq(4, 4, 4, 4))
+  def asymE5M2E4M3 = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP8_E4M3),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode11)),
+    inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
+
+  // E2M3 (sig4, exp2, fp6/LUT) mixed-quad combos -- same mode10/mode11 slots as E4M3 (sig-keyed).
+  def asymE2M3Fp4 = MxConfig(Set(MxFormat.FP6_E2M3), Set(MxFormat.FP4),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode10)),
+    inActBusWidth = 12, inWeiBusWidth = 8, expAdderWidths = Seq(4, 4, 4, 4))
+  def asymE2M3E3M2 = MxConfig(Set(MxFormat.FP6_E2M3), Set(MxFormat.FP6_E3M2),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode10)),
+    inActBusWidth = 12, inWeiBusWidth = 12, expAdderWidths = Seq(4, 4, 4, 4))
+  def asymE2M3E5M2 = MxConfig(Set(MxFormat.FP6_E2M3), Set(MxFormat.FP8_E5M2),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode10)),
+    inActBusWidth = 12, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
+  def asymFp4E2M3 = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP6_E2M3),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode11)),
+    inActBusWidth = 8, inWeiBusWidth = 12, expAdderWidths = Seq(4, 4, 4, 4))
+  def asymE3M2E2M3 = MxConfig(Set(MxFormat.FP6_E3M2), Set(MxFormat.FP6_E2M3),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode11)),
+    inActBusWidth = 12, inWeiBusWidth = 12, expAdderWidths = Seq(4, 4, 4, 4))
+  def asymE5M2E2M3 = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP6_E2M3),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode11)),
+    inActBusWidth = 16, inWeiBusWidth = 12, expAdderWidths = Seq(5, 5, 5, 5))
 }
 
 // MX FLOAT BUNDLE

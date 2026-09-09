@@ -60,8 +60,11 @@ object requiredPEMode {
       Cat(4.U(3.W), 4.U(3.W)) -> 8.U
     ))
 
-    // M1: E4M3×E4M3 (both sig=4) with runtime LUT enabled -> mode9 (4-wide LUT path); else mode8.
-    val idxSel = Mux(lutEn && a.sig === 4.U && w.sig === 4.U, 9.U, idx)
+    // With runtime LUT enabled, a sig4 operand (E4M3/E2M3) is quad (2/lane): both sig4 -> mode9; sig4 act
+    // x small wei -> mode10; small act x sig4 wei -> mode11 (all mixed quad, 4 products). Else -> idx.
+    val idxSel = Mux(lutEn && a.sig === 4.U && w.sig === 4.U, 9.U,
+                 Mux(lutEn && a.sig === 4.U && (w.sig === 2.U || w.sig === 3.U), 10.U,
+                 Mux(lutEn && w.sig === 4.U && (a.sig === 2.U || a.sig === 3.U), 11.U, idx)))
 
     mxModeDecode(idxSel)
   }

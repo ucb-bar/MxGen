@@ -45,7 +45,7 @@ class MxFpMul_MxGemminiE4M3Lut_Mode9_Spec
   behavior of "MxFpMul mxGemminiE4M3Lut mode9 (E4M3 4-wide)"
 
   it should "compute 4 independent E4M3 products with lut_en" in {
-    val config = MxConfig.mxGemminiE4M3Lut.copy(
+    val config = MxConfig.mxGemminiAll.copy(
       productFormat = MxFormat(8, 8), accFormat = MxFormat(8, 8))
 
     test(new MxFpMulHarnessBf16Out_NewIO(config, lut = false, latency = 0, forceLutEn = true)) { h =>

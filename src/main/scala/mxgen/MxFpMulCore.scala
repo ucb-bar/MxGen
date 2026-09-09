@@ -282,28 +282,25 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
     val base  = laneIdx * laneW
     val pairs = config.modesSupported.filter(_.numOutputs == 4)
                       .map(m => (m.actWidth, m.weiWidth)).toSet
-    val need8 = laneW >= 8 && pairs.contains((4, 4))
-    val need6 = laneW >= 6 && pairs.contains((3, 3))
-    val need5 = laneW >= 5 && (pairs.contains((2, 3)) || pairs.contains((3, 2)))
-    val s4    = alignToAccSig(base, 4)
-    val m8    = if (need8) Some(alignToAccSig(base, 8)) else None
-    val m6    = if (need6) Some(alignToAccSig(base, 6)) else None
-    val m5    = if (need5) Some(alignToAccSig(base, 5)) else None
-    // Base select among the {2x2->4, 3x3->6, mixed->5} products, then override with the 4x4->8 case.
-    val baseSel: UInt = (m6, m5) match {
-      case (Some(v6), Some(v5)) =>
-        Mux(actType.sig === 2.U && weiType.sig === 2.U, s4,
-          Mux(actType.sig === 3.U && weiType.sig === 3.U, v6, v5))
-      case (Some(v6), None) =>
-        Mux(actType.sig === 3.U && weiType.sig === 3.U, v6, s4)
-      case (None, Some(v5)) =>
-        Mux(actType.sig === 2.U && weiType.sig === 2.U, s4, v5)
-      case (None, None) => s4
-    }
-    m8 match {
-      case Some(v8) => Mux(actType.sig === 4.U && weiType.sig === 4.U, v8, baseSel)
-      case None     => baseSel
-    }
+    // Product magnitude width per runtime sig-pair: 4x4->8, 4x3/3x4->7 (mixed quad), 4x2/2x4->6 and
+    // 3x3->6, 2x3/3x2->5, 2x2->4. Each arm is elaborated only if its pair is in modesSupported, so
+    // configs without the mixed-quad modes are byte-identical.
+    // The mixed-quad mode carries weiWidth=3 (or actWidth=3), so its pair is (4,3)/(3,4); at runtime the
+    // fp4 partner presents sig=2, so route BOTH the (4,2)/(2,4) and (4,3)/(3,4) runtime pairs off it.
+    val hasMixed4 = pairs.contains((4, 3)) || pairs.contains((3, 4))
+    val need8  = laneW >= 8 && pairs.contains((4, 4))
+    val need7  = laneW >= 7 && hasMixed4      // 4x3 / 3x4 product (e3m2 partner)
+    val need6q = laneW >= 6 && hasMixed4      // 4x2 / 2x4 product (fp4 partner, same mode)
+    val need6  = laneW >= 6 && pairs.contains((3, 3))
+    val need5  = laneW >= 5 && (pairs.contains((2, 3)) || pairs.contains((3, 2)))
+    val sa = actType.sig; val sw = weiType.sig
+    var sel: UInt = alignToAccSig(base, 4)   // 2x2 default
+    if (need5)  sel = Mux((sa === 2.U && sw === 3.U) || (sa === 3.U && sw === 2.U), alignToAccSig(base, 5), sel)
+    if (need6)  sel = Mux(sa === 3.U && sw === 3.U, alignToAccSig(base, 6), sel)
+    if (need6q) sel = Mux((sa === 4.U && sw === 2.U) || (sa === 2.U && sw === 4.U), alignToAccSig(base, 6), sel)
+    if (need7)  sel = Mux((sa === 4.U && sw === 3.U) || (sa === 3.U && sw === 4.U), alignToAccSig(base, 7), sel)
+    if (need8)  sel = Mux(sa === 4.U && sw === 4.U, alignToAccSig(base, 8), sel)
+    sel
   }
 
   def peMagOut2(laneIdx: Int): UInt = {

@@ -16,6 +16,7 @@ class LaneMulSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   it should "compute exact 4x4 / 3x3 / 2x2 products" in {
     test(new LaneMul(lut = false)) { d =>
       d.io.enable.poke(true.B)
+      d.io.is4xN.poke(false.B); d.io.wideIsAct.poke(false.B)
 
       // ---- 4x4 (E4M3): all 16x16 ----
       d.io.is4x4.poke(true.B)
@@ -42,6 +43,38 @@ class LaneMulSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
         d.io.act.poke(a.U); d.io.wei.poke(w.U)
         d.clock.step()
         d.io.out.expect((a * w).U, s"2x2 $a*$w")
+      }
+
+      // ---- is4xN 4-bit x 2-bit (E4M3 x FP4) ----
+      d.io.is4x4.poke(false.B); d.io.is4xN.poke(true.B)
+      d.io.actMode.poke(false.B); d.io.weiMode.poke(false.B)
+      d.io.wideIsAct.poke(true.B)   // wide = act (0..15), small = wei (0..3)
+      for (a <- 0 until 16; w <- 0 until 4) {
+        d.io.act.poke(a.U); d.io.wei.poke(w.U)
+        d.clock.step()
+        d.io.out.expect((a * w).U, s"4x2 act $a*$w")
+      }
+      d.io.wideIsAct.poke(false.B)  // wide = wei (0..15), small = act (0..3)
+      for (a <- 0 until 4; w <- 0 until 16) {
+        d.io.act.poke(a.U); d.io.wei.poke(w.U)
+        d.clock.step()
+        d.io.out.expect((a * w).U, s"2x4 wei $a*$w")
+      }
+
+      // ---- is4xN 4-bit x 3-bit (E4M3 x FP6 E3M2) ----
+      d.io.wideIsAct.poke(true.B)   // wide = act (0..15), small = wei (0..7, 3-bit)
+      d.io.actMode.poke(false.B); d.io.weiMode.poke(true.B)
+      for (a <- 0 until 16; w <- 0 until 8) {
+        d.io.act.poke(a.U); d.io.wei.poke(w.U)
+        d.clock.step()
+        d.io.out.expect((a * w).U, s"4x3 act $a*$w")
+      }
+      d.io.wideIsAct.poke(false.B)  // wide = wei (0..15), small = act (0..7, 3-bit)
+      d.io.actMode.poke(true.B); d.io.weiMode.poke(false.B)
+      for (a <- 0 until 8; w <- 0 until 16) {
+        d.io.act.poke(a.U); d.io.wei.poke(w.U)
+        d.clock.step()
+        d.io.out.expect((a * w).U, s"3x4 wei $a*$w")
       }
     }
   }
