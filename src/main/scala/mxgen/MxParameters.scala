@@ -392,6 +392,17 @@ object MxConfig {
   def asymFp4E5M2 = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP8_E5M2),
     productFormat = MxFormat.Custom(4, 4),
     inActBusWidth = 8, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
+
+  // FP8_E5M2 activation x FP6_E3M2 weight -> mode4 (both sig3, both LUT-deprojected). Per-operand altfmt
+  // (E5M2 alt1, E3M2 alt0) + per-operand deproject width (act 8b, wei 6b).
+  def asymE5M2E3M2 = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP6_E3M2),
+    productFormat = MxFormat.Custom(4, 4),
+    inActBusWidth = 16, inWeiBusWidth = 12, expAdderWidths = Seq(5, 5, 5, 5))
+
+  // Opposite: FP6_E3M2 activation x FP8_E5M2 weight -> mode4 (act 6b, wei 8b).
+  def asymE3M2E5M2 = MxConfig(Set(MxFormat.FP6_E3M2), Set(MxFormat.FP8_E5M2),
+    productFormat = MxFormat.Custom(4, 4),
+    inActBusWidth = 12, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
 }
 
 // MX FLOAT BUNDLE
