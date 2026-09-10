@@ -433,28 +433,28 @@ object MxConfig {
     productFormat = MxFormat.Custom(4, 4),
     inActBusWidth = 12, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
 
-  // Mixed quad: FP8_E4M3 activation (via LUT, 2/lane) x FP4 weight -> mode10, 4 products.
+  // FP8_E4M3 activation x FP4 weight: mode10 (E4M3 quad, lut on, 4 products) or mode6 (E4M3 single, lut off, 2).
   def asymE4M3Fp4 = MxConfig(Set(MxFormat.FP8_E4M3), Set(MxFormat.FP4),
     productFormat = MxFormat.Custom(4, 4),
-    modesOverride = Some(List(MxPEParams.mode10)),
+    modesOverride = Some(List(MxPEParams.mode6, MxPEParams.mode10)),
     inActBusWidth = 16, inWeiBusWidth = 8, expAdderWidths = Seq(4, 4, 4, 4))
 
-  // Opposite mixed quad: FP4 activation x FP8_E4M3 weight (via LUT, 2/lane) -> mode11, 4 products.
+  // FP4 activation x FP8_E4M3 weight: mode11 (E4M3 quad, lut on, 4 products) or mode2 (E4M3 single, lut off, 2).
   def asymFp4E4M3 = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP8_E4M3),
     productFormat = MxFormat.Custom(4, 4),
-    modesOverride = Some(List(MxPEParams.mode11)),
+    modesOverride = Some(List(MxPEParams.mode2, MxPEParams.mode11)),
     inActBusWidth = 8, inWeiBusWidth = 16, expAdderWidths = Seq(4, 4, 4, 4))
 
   // E4M3-quad x sig3 (both LUT-deprojected). mode10 (E4M3 act) / mode11 (E4M3 wei); weiWidth/actWidth=3
   // covers e3m2 and e5m2. E5M2 pairs need per-operand altfmt (both fp8 code0) + exp5 adders.
   def asymE4M3E3M2 = MxConfig(Set(MxFormat.FP8_E4M3), Set(MxFormat.FP6_E3M2),
-    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode10)),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode7, MxPEParams.mode10)),
     inActBusWidth = 16, inWeiBusWidth = 12, expAdderWidths = Seq(4, 4, 4, 4))
   def asymE4M3E5M2 = MxConfig(Set(MxFormat.FP8_E4M3), Set(MxFormat.FP8_E5M2),
     productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode10)),
     inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
   def asymE3M2E4M3 = MxConfig(Set(MxFormat.FP6_E3M2), Set(MxFormat.FP8_E4M3),
-    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode11)),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode5, MxPEParams.mode11)),
     inActBusWidth = 12, inWeiBusWidth = 16, expAdderWidths = Seq(4, 4, 4, 4))
   def asymE5M2E4M3 = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP8_E4M3),
     productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode11)),
@@ -479,6 +479,15 @@ object MxConfig {
   def asymE5M2E2M3 = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP6_E2M3),
     productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode11)),
     inActBusWidth = 16, inWeiBusWidth = 12, expAdderWidths = Seq(5, 5, 5, 5))
+
+  // Dual-sig4 quad: E2M3 x E4M3 (both sig4) -> mode9, the true 2/lane x 2/lane = 4-product quad. Mixed
+  // code widths (E2M3 6b, E4M3 8b) + per-operand altfmt (E2M3 fp6-alt1, E4M3 fp8-alt0).
+  def asymE2M3E4M3 = MxConfig(Set(MxFormat.FP6_E2M3), Set(MxFormat.FP8_E4M3),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode9)),
+    inActBusWidth = 12, inWeiBusWidth = 16, expAdderWidths = Seq(4, 4, 4, 4))
+  def asymE4M3E2M3 = MxConfig(Set(MxFormat.FP8_E4M3), Set(MxFormat.FP6_E2M3),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode9)),
+    inActBusWidth = 16, inWeiBusWidth = 12, expAdderWidths = Seq(4, 4, 4, 4))
 }
 
 // MX FLOAT BUNDLE

@@ -47,7 +47,7 @@ class MxFpMul_Fp4E4M3_Mode11_Spec
     val config = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP8_E4M3),
       productFormat = MxFormat(8, 8), accFormat = MxFormat(8, 8),
       inActBusWidth = 8, inWeiBusWidth = 16,
-      modesOverride = Some(List(MxPEParams.mode11)),
+      modesOverride = Some(List(MxPEParams.mode2, MxPEParams.mode11)),
       expAdderWidths = Seq(4, 4, 4, 4))
 
     test(new MxFpMulHarnessBf16Out_NewIO(config, lut = false, latency = 0, forceLutEn = true)) { h =>
@@ -79,6 +79,45 @@ class MxFpMul_Fp4E4M3_Mode11_Spec
           assert(got == exp,
             f"trial $t lane $k: got 0x$got%04X exp 0x$exp%04X  " +
             f"(a${ai}=0x${a(ai)}%01X=${decodeFP4(a(ai))} w${wj}=0x${w(wj)}%02X=${decodeE4M3(w(wj))} c=$cVal)")
+        }
+      }
+    }
+  }
+
+  it should "compute 2 products (FP4-quad x E4M3-single) without lut_en (mode2)" in {
+    val config = MxConfig(Set(MxFormat.FP4), Set(MxFormat.FP8_E4M3),
+      productFormat = MxFormat(8, 8), accFormat = MxFormat(8, 8),
+      inActBusWidth = 8, inWeiBusWidth = 16,
+      modesOverride = Some(List(MxPEParams.mode2, MxPEParams.mode11)),
+      expAdderWidths = Seq(4, 4, 4, 4))
+
+    // lut_en OFF -> FP4 quad (2 acts) x E4M3 single (1 wei) -> 2 products [a0w0, a1w0] in out lanes 0, 2.
+    test(new MxFpMulHarnessBf16Out_NewIO(config, lut = false, latency = 0, forceLutEn = false)) { h =>
+      h.io.enable.poke(true.B)
+      h.io.type_a.exp.poke(2.U); h.io.type_a.sig.poke(2.U)   // FP4
+      h.io.type_w.exp.poke(4.U); h.io.type_w.sig.poke(4.U)   // E4M3
+
+      val rng = new Random(0xF432)
+      for (t <- 0 until 300) {
+        val a  = Seq.fill(2)(genFP4(rng))     // 2 FP4 activations
+        val w0 = genE4M3(rng)                 // single E4M3 weight
+        val cRaw = genBF16(rng); val cVal = bf16ToFloat(cRaw)
+
+        val aPacked = BigInt(a(0) & 0xF) | (BigInt(a(1) & 0xF) << 4)   // 2 x 4b
+        val wPacked = BigInt(w0 & 0xFF)                               // 1 x 8b (low lane)
+
+        h.io.in_activation.poke(aPacked.U(8.W))
+        h.io.in_weights.poke(wPacked.U(16.W))
+        h.io.c_raw.poke(cRaw.U(16.W))
+        h.clock.step(2)
+
+        val out = h.io.out_bf16.peek().litValue
+        for ((lane, k) <- Seq(0 -> 0, 2 -> 1)) {   // lane0 = a0*w0, lane2 = a1*w0
+          val exp = floatToBf16Raw(decodeFP4(a(k)) * decodeE4M3(w0) + cVal)
+          val got = ((out >> (lane * 16)) & 0xFFFF).toInt
+          assert(got == exp,
+            f"trial $t lane $lane: got 0x$got%04X exp 0x$exp%04X  " +
+            f"(a$k=0x${a(k)}%01X=${decodeFP4(a(k))} w0=0x$w0%02X=${decodeE4M3(w0)} c=$cVal)")
         }
       }
     }

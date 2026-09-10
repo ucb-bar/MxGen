@@ -25,18 +25,22 @@ class MxPE(config: MxConfig, lut: Boolean) extends Module {
     val actIs4 = io.modeDecoded.actWidth === 4.U
     val weiIs4 = io.modeDecoded.weiWidth === 4.U
     val is4x4 = actIs4 && weiIs4
-    // Mixed quad: exactly one operand is 4-bit AND both are dual (2/lane) -- distinguishes the new quad
-    // modes from the legacy single modes (mode2/5/6/7, which also have one 4-bit operand but Inputs=1).
-    val is4xN = (actIs4 =/= weiIs4) &&
-      (io.modeDecoded.actInputs === 2.U) && (io.modeDecoded.weiInputs === 2.U)
+    // Exactly one operand is 4-bit: the {hi,lo}-split multiply, for both the 4-product quad modes (10/11)
+    // and the 2-product dual-throughput modes (2/5/6/7, one operand single).
+    val is4xN = (actIs4 =/= weiIs4)
     val actM2 = io.modeDecoded.actWidth === 3.U
     val weiM2 = io.modeDecoded.weiWidth === 3.U
 
-    // lane k = (act k/2) x (wei k%2)  ->  [a0w0, a0w1, a1w0, a1w1]
+    // Map operand slots to lanes. 4-output: lane k = act(k/2) x wei(k%2) -> [a0w0,a0w1,a1w0,a1w1].
+    // 2-output: the dual operand's two elements go to lanes 0 and 2 (where out2_toRec reads); a single
+    // operand always uses slot 0.
+    val two = io.modeDecoded.numOutputs === 2.U
     val laneOuts = (0 until 4).map { k =>
       val lm = Module(new LaneMul(lut))
-      lm.io.act       := actSlots(k / 2).pad(4)
-      lm.io.wei       := weiSlots(k % 2).pad(4)
+      val actIdx = Mux(io.modeDecoded.actInputs === 1.U, 0.U, (k / 2).U)
+      val weiIdx = Mux(io.modeDecoded.weiInputs === 1.U, 0.U, Mux(two, (k / 2).U, (k % 2).U))
+      lm.io.act       := actSlots(actIdx).pad(4)
+      lm.io.wei       := weiSlots(weiIdx).pad(4)
       lm.io.is4x4     := is4x4
       lm.io.is4xN     := is4xN
       lm.io.wideIsAct := actIs4
