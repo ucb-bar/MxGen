@@ -16,24 +16,27 @@ class MxFpMul_E4M3Fp4_Mode10_Spec
 
   // ---- E4M3 (e4 m3 bias7) ----
   def decodeE4M3(raw: Int): Float = {
-    val e = (raw >> 3) & 0xF; val m = raw & 0x7
-    if (e == 0) { if (m == 0) 0.0f else (m.toFloat / 8) * math.pow(2.0, 1 - 7).toFloat }
-    else (1.0f + m.toFloat / 8) * math.pow(2.0, e - 7).toFloat
+    val s = (raw >> 7) & 1; val e = (raw >> 3) & 0xF; val m = raw & 0x7
+    val v = if (e == 0) { if (m == 0) 0.0f else (m.toFloat / 8) * math.pow(2.0, 1 - 7).toFloat }
+            else (1.0f + m.toFloat / 8) * math.pow(2.0, e - 7).toFloat
+    if (s == 1) -v else v
   }
   def genE4M3(rng: Random): Int = {
+    val sign = rng.nextInt(2) << 7   // signed: exercises the per-product sign path
     val r = rng.nextFloat()
     if (r < 0.12f) 0
-    else if (r < 0.28f) 1 + rng.nextInt(0x7)
-    else ((1 + rng.nextInt(0xE)) << 3) | rng.nextInt(0x8)
+    else if (r < 0.28f) sign | (1 + rng.nextInt(0x7))
+    else sign | ((1 + rng.nextInt(0xE)) << 3) | rng.nextInt(0x8)
   }
 
   // ---- FP4 (E2M1 bias1) ----
   def decodeFP4(raw: Int): Float = {
-    val e = (raw >> 1) & 0x3; val m = raw & 0x1
-    if (e == 0) { if (m == 0) 0.0f else (m.toFloat / 2) * math.pow(2.0, 1 - 1).toFloat }
-    else (1.0f + m.toFloat / 2) * math.pow(2.0, e - 1).toFloat
+    val s = (raw >> 3) & 1; val e = (raw >> 1) & 0x3; val m = raw & 0x1
+    val v = if (e == 0) { if (m == 0) 0.0f else (m.toFloat / 2) * math.pow(2.0, 1 - 1).toFloat }
+            else (1.0f + m.toFloat / 2) * math.pow(2.0, e - 1).toFloat
+    if (s == 1) -v else v
   }
-  def genFP4(rng: Random): Int = rng.nextInt(8)   // all 3-bit E2M1 codes
+  def genFP4(rng: Random): Int = rng.nextInt(16)  // all 4-bit E2M1 codes incl. sign (catches per-product sign bug)
 
   def bf16ToFloat(raw16: Int): Float = java.lang.Float.intBitsToFloat(raw16 << 16)
   def floatToBf16Raw(f: Float): Int = {
@@ -116,8 +119,8 @@ class MxFpMul_E4M3Fp4_Mode10_Spec
         h.clock.step(2)
 
         val out = h.io.out_bf16.peek().litValue
-        // 2 products land in output lanes 0 and 2: lane0 = a0*w0, lane2 = a0*w1.
-        for ((lane, k) <- Seq(0 -> 0, 2 -> 1)) {
+        // 2 products land contiguously in output lanes 0 and 1: lane0 = a0*w0, lane1 = a0*w1.
+        for ((lane, k) <- Seq(0 -> 0, 1 -> 1)) {
           val exp = floatToBf16Raw(decodeE4M3(a0) * decodeFP4(w(k)) + cVal)
           val got = ((out >> (lane * 16)) & 0xFFFF).toInt
           assert(got == exp,

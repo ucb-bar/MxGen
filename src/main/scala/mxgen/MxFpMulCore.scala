@@ -332,7 +332,11 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
     val peExp2 = if (config.needsOut2) Some(out_e((i / 2) * (totalAdderWidth / 2) + outExp, (i / 2) * (totalAdderWidth / 2))) else None
     val peExp1 = if (config.needsOut1) Some(out_e(outExp, 0))     else None
     val peSign4 = out_signs(i)
-    val peSign2 = out_signs((i / 2) * 2)
+    // 2-output sign: product p=(i/2) maps to a different standard-quad sign slot per mode.
+    // act-single (mode6/7): products are a0*w0, a0*w1 -> slots 0,1 (out_signs(p)).
+    // wei-single (mode2/5): products are a0*w0, a1*w0 -> slots 0,2 (out_signs(2p)).
+    // The magnitude/exp already follow p (peMagOut2(i/2)); only the sign slot differs, so key it on actInputs.
+    val peSign2 = Mux(modeWire.actInputs === 1.U, out_signs(i / 2), out_signs((i / 2) * 2))
     val peSign1 = out_signs(0)
     val peZero4 = in_a_mask(i / 2) || in_w_mask(i % 2)
     val peZero2 = in_a_mask(i / 2) || in_w_mask((i / 2) % 2)

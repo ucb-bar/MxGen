@@ -208,9 +208,11 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
                                                                   n44.map(_._3).getOrElse(fallback._3))
       val rec_sig   = Mux(typeA.sig === 2.U || typeW.sig === 2.U, nsm.map(_._1).getOrElse(fallback._1),
                                                                   n44.map(_._1).getOrElse(fallback._1))
+      // act-single flush check must read sums(i) (a0*w1), not the raw quad sums(2i)=a0*w0; else a tiny p1 fails to flush and wraps.
+      val esIdx = Mux(io.mode.actInputs === 1.U, i.U, (i * 2).U)
       MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(i * 2),
         Mux(!shift_dir, peExpW(i * 2) -% rec_exp, peExpW(i * 2) +% rec_exp),
-        rec_sig, peIsNaN, peZeroW(i * 2) || isUnderflow(expSignedW(i * 2), rec_exp, shift_dir))
+        rec_sig, peIsNaN, peZeroW(i * 2) || isUnderflow(expSignedW(esIdx), rec_exp, shift_dir))
     }) else None
 
     val out1_toRec = if (config.needsOut1) Some({
@@ -229,7 +231,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
       val rawIn: RawFloat = (config.needsOut4, config.needsOut2, config.needsOut1) match {
         case (true, true, true) =>
           val raw4 = resize(out4_toRec.get(i), productFmt, cType)
-          val raw2 = resize(out2_toRec.get(i / 2), productFmt, cType)
+          val raw2 = resize(out2_toRec.get(Mux(io.mode.actInputs === 1.U, (i % 2).U, (i / 2).U)), productFmt, cType)
           val raw1 = resize(out1_toRec.get, productFmt, cType)
           val sel = Wire(new RawFloat(cType.exp, cType.sig))
           when (io.mode.numOutputs === 1.U) { sel := raw1 }
@@ -244,18 +246,18 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
           sel
         case (true, true, false) =>
           val raw4 = resize(out4_toRec.get(i), productFmt, cType)
-          val raw2 = resize(out2_toRec.get(i / 2), productFmt, cType)
+          val raw2 = resize(out2_toRec.get(Mux(io.mode.actInputs === 1.U, (i % 2).U, (i / 2).U)), productFmt, cType)
           val sel = Wire(new RawFloat(cType.exp, cType.sig))
           when (io.mode.numOutputs === 2.U) { sel := raw2 } .otherwise { sel := raw4 }
           sel
         case (false, true, true) =>
-          val raw2 = resize(out2_toRec.get(i / 2), productFmt, cType)
+          val raw2 = resize(out2_toRec.get(Mux(io.mode.actInputs === 1.U, (i % 2).U, (i / 2).U)), productFmt, cType)
           val raw1 = resize(out1_toRec.get, productFmt, cType)
           val sel = Wire(new RawFloat(cType.exp, cType.sig))
           when (io.mode.numOutputs === 1.U) { sel := raw1 } .otherwise { sel := raw2 }
           sel
         case (true, false, false) => resize(out4_toRec.get(i), productFmt, cType)
-        case (false, true, false) => resize(out2_toRec.get(i / 2), productFmt, cType)
+        case (false, true, false) => resize(out2_toRec.get(Mux(io.mode.actInputs === 1.U, (i % 2).U, (i / 2).U)), productFmt, cType)
         case (false, false, true) => resize(out1_toRec.get, productFmt, cType)
         case _ => throw new IllegalStateException("MxFpMul default path: no needsOut*")
       }

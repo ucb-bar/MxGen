@@ -451,13 +451,13 @@ object MxConfig {
     productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode7, MxPEParams.mode10)),
     inActBusWidth = 16, inWeiBusWidth = 12, expAdderWidths = Seq(4, 4, 4, 4))
   def asymE4M3E5M2 = MxConfig(Set(MxFormat.FP8_E4M3), Set(MxFormat.FP8_E5M2),
-    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode10)),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode7, MxPEParams.mode10)),
     inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
   def asymE3M2E4M3 = MxConfig(Set(MxFormat.FP6_E3M2), Set(MxFormat.FP8_E4M3),
     productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode5, MxPEParams.mode11)),
     inActBusWidth = 12, inWeiBusWidth = 16, expAdderWidths = Seq(4, 4, 4, 4))
   def asymE5M2E4M3 = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP8_E4M3),
-    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode11)),
+    productFormat = MxFormat.Custom(4, 4), modesOverride = Some(List(MxPEParams.mode5, MxPEParams.mode11)),
     inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
 
   // E2M3 (sig4, exp2, fp6/LUT) mixed-quad combos -- same mode10/mode11 slots as E4M3 (sig-keyed).
