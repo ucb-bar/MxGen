@@ -382,6 +382,15 @@ object MxConfig {
     expAdderWidths = Seq(5, 5, 5, 5),
   )
 
+  // Everything build: all 5 formats on BOTH sides + ALL 12 PE modes -> one mesh that supports every
+  // symmetric + asymmetric combo (25 format pairs; 36 counting E4M3 single vs quad). 16b buses, exp5
+  // adders. The LUT (projFormat=LutFP8E4M3, rdataWidth=8) builds all four deproject finders, runtime-
+  // selected, so it covers every format's codebook.
+  def allAsym = MxConfig(MxFormat.all, MxFormat.all,
+    productFormat = MxFormat.Custom(4, 4),
+    modesOverride = Some(MxPEParams.allModes),
+    inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
+
   // Single-format builds: the PE elaborates ONLY that format's decode + mode(s); everything else gated.
   // modesSupported auto-derives from the format (FP4->mode0, E3M2/E5M2->mode4); the mode9 quad formats
   // (E2M3, E4M3) list modes explicitly. Bus width comes from the operand descriptor at mac_mx.
