@@ -405,8 +405,12 @@ object MxConfig {
     productFormat = MxFormat.Custom(4, 4),
     modesOverride = Some(List(MxPEParams.mode8, MxPEParams.mode9)),
     inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(4, 4, 4, 4))
-  // E4M3 single throughput only (mode8, no quad): direct 8-bit codes, needs no LUT.
-  def e4m3SingleOnly = e4m3Only.copy(modesOverride = Some(List(MxPEParams.mode8)))
+  // E4M3 single throughput only (mode8, no quad): one direct 8-bit code per lane, needs no LUT. Bus is
+  // minBusWidth(E4M3) = 8 (no second slot; the 16b bus of e4m3Only exists only for the 2-wide quad).
+  def e4m3SingleOnly = MxConfig(Set(MxFormat.FP8_E4M3), Set(MxFormat.FP8_E4M3),
+    productFormat = MxFormat.Custom(4, 4),
+    modesOverride = Some(List(MxPEParams.mode8)),
+    inActBusWidth = 8, inWeiBusWidth = 8, expAdderWidths = Seq(4, 4, 4, 4))
   def e5m2Only = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP8_E5M2),
     productFormat = MxFormat.Custom(4, 4),
     inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
