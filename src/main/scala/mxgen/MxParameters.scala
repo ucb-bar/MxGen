@@ -411,6 +411,11 @@ object MxConfig {
     productFormat = MxFormat.Custom(4, 4),
     modesOverride = Some(List(MxPEParams.mode8)),
     inActBusWidth = 8, inWeiBusWidth = 8, expAdderWidths = Seq(4, 4, 4, 4))
+  // E4M3 single (mode8) + FP4 x FP4 quad (mode0), no LUT: both are direct codes in an 8-bit lane.
+  def e4m3SingleFp4 = MxConfig(Set(MxFormat.FP4, MxFormat.FP8_E4M3), Set(MxFormat.FP4, MxFormat.FP8_E4M3),
+    productFormat = MxFormat.Custom(4, 4),
+    modesOverride = Some(List(MxPEParams.mode0, MxPEParams.mode8)),
+    inActBusWidth = 8, inWeiBusWidth = 8, expAdderWidths = Seq(4, 4, 4, 4))
   def e5m2Only = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP8_E5M2),
     productFormat = MxFormat.Custom(4, 4),
     inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
