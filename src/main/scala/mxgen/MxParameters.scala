@@ -205,6 +205,10 @@ case class MxConfig (
   // MxDotProduct only: lower bound on bits of headroom above max-exp when
   // setting the anchor. Auto-bumped to fit sum-overflow if too small.
   anchorHeadroom:   Int                        = 4,
+  // Lane gating: hold the product cones of the modes not in use and the inputs of the accumulate lanes the
+  // mesh discards (lane i >= numOutputs, whose partial sums Mesh.scala zeroes) at constants, so they do not
+  // toggle. Results on the lanes the mesh consumes are unchanged; false restores the ungated datapath.
+  laneGating:       Boolean                    = true,
 ) {
   require(actFormats.nonEmpty, "MxConfig: actFormats must not be empty")
   require(weiFormats.nonEmpty, "MxConfig: weiFormats must not be empty")

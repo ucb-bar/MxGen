@@ -3,6 +3,39 @@ package mxgen
 import chisel3._
 import chisel3.util._
 
+/** Which of MxFpMul's product cones (4-, 2-, 1-output) its output select takes for a decoded mode, mirroring the
+  * when / elsewhen chain in MxFpMul exactly (including the fall-through for modes a config does not support), and
+  * which lanes of the packed PE product those cones read. Shared by the PE (multiplier gating) and MxFpMul (cone
+  * gating) so both gate precisely what the select discards.
+  */
+object MxLaneUse {
+  def cones(config: MxConfig, nOut: UInt): (Bool, Bool, Bool) = {
+    val is1 = nOut === 1.U
+    val is2 = nOut === 2.U
+    (config.needsOut4, config.needsOut2, config.needsOut1) match {
+      case (true, true, true)   => (!is1 && !is2, is2, is1)
+      case (true, false, true)  => (!is1, false.B, is1)
+      case (true, true, false)  => (!is2, is2, false.B)
+      case (false, true, true)  => (false.B, !is1, is1)
+      case (true, false, false) => (true.B, false.B, false.B)
+      case (false, true, false) => (false.B, true.B, false.B)
+      case (false, false, true) => (false.B, false.B, true.B)
+      case _                    => (true.B, true.B, true.B)
+    }
+  }
+  /** lane k of the packed product is read by a cone in use: the 4-cone reads every lane, the 2-cone the 7 bits at
+    * offsets 0 and outPE_width/2, the 1-cone the single mode's product width from offset 0 */
+  def laneUsed(config: MxConfig, k: Int, use4: Bool, use2: Bool, use1: Bool): Bool = {
+    val lo = config.laneOffset(k); val hi = lo + config.laneWidth(k)
+    def overlaps(a: Int, b: Int): Boolean = lo < b && a < hi
+    val half  = config.outPE_width / 2
+    val prodW = config.modesSupported.find(_.numOutputs == 1).map(_.outTotalWidth).getOrElse(config.outPE_width)
+    val in2 = overlaps(0, 7) || overlaps(half, half + 7)
+    val in1 = overlaps(0, prodW)
+    use4 || (use2 && in2.B) || (use1 && in1.B)
+  }
+}
+
 class MxPE(config: MxConfig, lut: Boolean) extends Module {
   val io = IO(new Bundle {
     val modeDecoded = Input(new mxMode())
@@ -35,18 +68,25 @@ class MxPE(config: MxConfig, lut: Boolean) extends Module {
     // 2-output: the dual operand's two elements go to lanes 0 and 2 (where out2_toRec reads); a single
     // operand always uses slot 0.
     val two = io.modeDecoded.numOutputs === 2.U
+    // Lane gating (config.laneGating): the 1-output cone reads lane 0 only and the 2-output cone lane 0 and the lane
+    // at the half-bus offset (MxFpMul.out1_toRec / out2_toRec); the other LaneMuls computed duplicates. Hold their
+    // operands at zero and drop their enable so the 16 MACUs behind them do not toggle.
+    val (use4, use2, use1) = MxLaneUse.cones(config, io.modeDecoded.numOutputs)
+    def laneUsed(k: Int): Bool =
+      if (!config.laneGating || k == 0) true.B else MxLaneUse.laneUsed(config, k, use4, use2, use1)
     val laneOuts = (0 until 4).map { k =>
       val lm = Module(new LaneMul(lut))
+      val used = laneUsed(k)
       val actIdx = Mux(io.modeDecoded.actInputs === 1.U, 0.U, (k / 2).U)
       val weiIdx = Mux(io.modeDecoded.weiInputs === 1.U, 0.U, Mux(two, (k / 2).U, (k % 2).U))
-      lm.io.act       := actSlots(actIdx).pad(4)
-      lm.io.wei       := weiSlots(weiIdx).pad(4)
+      lm.io.act       := Mux(used, actSlots(actIdx).pad(4), 0.U)
+      lm.io.wei       := Mux(used, weiSlots(weiIdx).pad(4), 0.U)
       lm.io.is4x4     := is4x4
       lm.io.is4xN     := is4xN
       lm.io.wideIsAct := actIs4
       lm.io.actMode   := actM2
       lm.io.weiMode   := weiM2
-      lm.io.enable    := io.enable
+      lm.io.enable    := io.enable && used
       lm.io.out
     }
     io.output := VecInit((0 until 4).map(k => laneOuts(k).pad(config.laneWidths(k)))).asUInt

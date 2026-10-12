@@ -83,19 +83,29 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
 
   val recIn_c = io.rec_c.asTypeOf(Vec(config.numActiveOutputLanes, UInt(config.accFormat.recoded.W)))
 
+  // Lane gating (config.laneGating). The mesh consumes output lanes 0 until numOutputs only: Mesh.scala zeroes the
+  // partial sums entering every other lane and the accumulator write packs lanes 0 (single), 0..1 (two products) or
+  // 0..3 (quad). Those lanes still ran the full accumulate with the duplicated product. Here a lane the mesh discards
+  // gets constant adder inputs (product zero, c zero) so its adder, rounding and pipeline registers stop toggling;
+  // its output becomes a constant the mesh never reads. Lane 0 is always live.
+  val nOut = io.mode.numOutputs
+  def laneActive(i: Int): Bool = if (!config.laneGating || i == 0) true.B else (i.U < nOut)
+  def gateU(active: Bool, x: UInt): UInt = if (config.laneGating) Mux(active, x, 0.U(x.getWidth.W)) else x
+
   for (i <- 0 until config.numActiveOutputLanes) {
     if (config.useMxPEAddRecFN) {
       def pipe[T <: chisel3.Data](sig: T, n: Int): T =
         (0 until n).foldLeft(sig)((s, _) => RegNext(s))
       val unit = addUnits.get(i)
+      val act  = laneActive(i)
       unit.io.roundingMode   := hardfloat.consts.round_near_even
       unit.io.detectTininess := hardfloat.consts.tininess_afterRounding
-      unit.io.peMag    := pipe(peMagW(i),  preAddRegs)
-      unit.io.peExp    := pipe(peExpW(i),  preAddRegs)
-      unit.io.peSign   := pipe(peSignW(i), preAddRegs)
-      unit.io.peIsZero := pipe(peZeroW(i), preAddRegs)
+      unit.io.peMag    := pipe(gateU(act, peMagW(i)),  preAddRegs)
+      unit.io.peExp    := pipe(gateU(act, peExpW(i)),  preAddRegs)
+      unit.io.peSign   := pipe(gateU(act, peSignW(i).asUInt).asBool, preAddRegs)
+      unit.io.peIsZero := pipe((if (config.laneGating) (peZeroW(i) || !act) else peZeroW(i)), preAddRegs)
       unit.io.peIsNaN  := pipe(peIsNaN,    preAddRegs)
-      unit.io.c        := pipe(recIn_c(i), preAddRegs)
+      unit.io.c        := pipe(gateU(act, recIn_c(i)), preAddRegs)
 
       outputs(i) := unit.io.out
     }
@@ -105,7 +115,15 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
   //   normalize(raw_product) → MxPEOutToRaw → RoundAnyRawFNToRecFN(productFmt → accFmt) → MxMulAddRecFN.
   // Validated across narrow accFormats and matches old-gemmini bit behavior.
   if (useDefault) {
-    val out_pe = core.io.rawProduct
+    val out_pe_raw = core.io.rawProduct
+    // Product-path gating: the 4-, 2- and 1-output cones (normalize, MxPEOutToRaw, resize) are all elaborated and
+    // muxed by the select chain below; feed each cone the raw product only when that chain takes it (MxLaneUse.cones
+    // mirrors the chain, including the fall-through of unsupported modes) so the other cones sit at zero.
+    val (use4, use2, use1) = MxLaneUse.cones(config, nOut)
+    def coneIn(sel: Bool): UInt = if (config.laneGating) Mux(sel, out_pe_raw, 0.U(out_pe_raw.getWidth.W)) else out_pe_raw
+    val out_pe4 = coneIn(use4)
+    val out_pe2 = coneIn(use2)
+    val out_pe1 = coneIn(use1)
     val out_e  = peExpW
     val out_signs = (0 until config.numActiveOutputLanes).map(i => peSignW(i))
     val laneOutW = config.outPE_width / 4
@@ -162,6 +180,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
 
     val out4_toRec = if (config.needsOut4) Some(VecInit.tabulate(4) { i =>
       val base = i * laneOutW
+      val out_pe = out_pe4
       val n44 = if (needSig44)  Some(normalize(out_pe(base + 7, base), productFmt.sig - 1, 8)) else None
       val n7  = if (needSig7)   Some(normalize(out_pe(base + 6, base), productFmt.sig - 1, 7)) else None
       val n6q = if (needSig6q)  Some(normalize(out_pe(base + 5, base), productFmt.sig - 1, 6)) else None
@@ -197,6 +216,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
 
     val out2_toRec = if (config.needsOut2) Some(VecInit.tabulate(2) { i =>
       val base = i * laneHalfW
+      val out_pe = out_pe2
       val n44 = if (need2Sig44)    Some(normalize(out_pe(base + 6, base), productFmt.sig - 1, 7)) else None
       val nsm = if (need2Smaller)  Some(normalize(out_pe(base + 5, base), productFmt.sig - 1, 6)) else None
       val choices = Seq(n44, nsm).flatten
@@ -218,7 +238,7 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
     val out1_toRec = if (config.needsOut1) Some({
       val singleOut = config.modesSupported.find(_.numOutputs == 1).get
       val prodW = singleOut.outTotalWidth
-      val n = normalize(out_pe(prodW - 1, 0), productFmt.sig - 1, prodW)
+      val n = normalize(out_pe1(prodW - 1, 0), productFmt.sig - 1, prodW)
       MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(0),
         Mux(!n._3, peExpW(0) -% n._2, peExpW(0) +% n._2),
         n._1, peIsNaN, peZeroW(0) || isUnderflow(expSignedW(0), n._2, n._3))
@@ -264,8 +284,18 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
       val add = Module(new hardfloatHelper.MxMulAddRecFN(cType.exp, cType.sig))
       add.io.roundingMode := hardfloat.consts.round_near_even
       add.io.detectTininess := hardfloat.consts.tininess_afterRounding
-      add.io.a := pipe(rawIn, preAddRegs)
-      add.io.c := pipe(recIn_c(i), preAddRegs)
+      // A discarded lane adds zero to zero: constant inputs, no toggling in the adder or its pipeline registers.
+      val rawG = Wire(new RawFloat(cType.exp, cType.sig))
+      if (config.laneGating && i > 0) {
+        val zeroRaw = Wire(new RawFloat(cType.exp, cType.sig))
+        zeroRaw.isNaN := false.B; zeroRaw.isInf := false.B; zeroRaw.isZero := true.B
+        zeroRaw.sign := false.B; zeroRaw.sExp := 0.S; zeroRaw.sig := 0.U
+        rawG := Mux(laneActive(i), rawIn, zeroRaw)
+      } else {
+        rawG := rawIn
+      }
+      add.io.a := pipe(rawG, preAddRegs)
+      add.io.c := pipe(gateU(laneActive(i), recIn_c(i)), preAddRegs)
       outputs(i) := (if (addLatency >= 1) RegNext(add.io.out) else add.io.out)
     }
   }
@@ -307,10 +337,10 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
     }
 
     val laneProductIeee = (0 until numLanes).map { i =>
-      peProductToBf16Ieee(peMagW(i), peExpW(i), peSignW(i), peZeroW(i), peIsNaN)
+      gateU(laneActive(i), peProductToBf16Ieee(peMagW(i), peExpW(i), peSignW(i), peZeroW(i), peIsNaN))
     }
     val laneCIeee = (0 until numLanes).map { i =>
-      fNFromRecFN(8, 8, recIn_c(i))
+      gateU(laneActive(i), fNFromRecFN(8, 8, recIn_c(i)))
     }
     val adder = Module(new mxgen.cvfpu.MxFpnewBf16Add(numLanes = numLanes, numPipeRegs = latency))
     adder.io.clock := clock
