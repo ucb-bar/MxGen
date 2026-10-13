@@ -155,14 +155,16 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
       }
     }
 
-    def resize(in: RawFloat, inT: MxFormat, outT: MxFormat): RawFloat = {
+    // (raw, recoded) of the product rounded to the accumulate format; the recoded form is what the zero-gating
+    // bypass returns when c is zero (a + 0 is exact, so it equals the adder's output bit for bit).
+    def resize(in: RawFloat, inT: MxFormat, outT: MxFormat): (RawFloat, UInt) = {
       val u = Module(new RoundAnyRawFNToRecFN(inT.exp, inT.sig, outT.exp, outT.sig, 0))
       u.io.in := in
       u.io.roundingMode := hardfloat.consts.round_near_even
       u.io.detectTininess := hardfloat.consts.tininess_afterRounding
       u.io.invalidExc := false.B
       u.io.infiniteExc := false.B
-      rawFloatFromRecFN(outT.exp, outT.sig, u.io.out)
+      (rawFloatFromRecFN(outT.exp, outT.sig, u.io.out), u.io.out)
     }
 
     // Gate per-width normalize() variants on whether any 4-output mode actually
@@ -248,55 +250,67 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
       (0 until n).foldLeft(sig)((s, _) => RegNext(s))
 
     for (i <- 0 until config.numActiveOutputLanes) {
-      val rawIn: RawFloat = (config.needsOut4, config.needsOut2, config.needsOut1) match {
-        case (true, true, true) =>
-          val raw4 = resize(out4_toRec.get(i), productFmt, cType)
-          val raw2 = resize(out2_toRec.get(Mux(io.mode.actInputs === 1.U, (i % 2).U, (i / 2).U)), productFmt, cType)
-          val raw1 = resize(out1_toRec.get, productFmt, cType)
-          val sel = Wire(new RawFloat(cType.exp, cType.sig))
-          when (io.mode.numOutputs === 1.U) { sel := raw1 }
-            .elsewhen (io.mode.numOutputs === 2.U) { sel := raw2 }
-            .otherwise { sel := raw4 }
-          sel
-        case (true, false, true) =>
-          val raw4 = resize(out4_toRec.get(i), productFmt, cType)
-          val raw1 = resize(out1_toRec.get, productFmt, cType)
-          val sel = Wire(new RawFloat(cType.exp, cType.sig))
-          when (io.mode.numOutputs === 1.U) { sel := raw1 } .otherwise { sel := raw4 }
-          sel
-        case (true, true, false) =>
-          val raw4 = resize(out4_toRec.get(i), productFmt, cType)
-          val raw2 = resize(out2_toRec.get(Mux(io.mode.actInputs === 1.U, (i % 2).U, (i / 2).U)), productFmt, cType)
-          val sel = Wire(new RawFloat(cType.exp, cType.sig))
-          when (io.mode.numOutputs === 2.U) { sel := raw2 } .otherwise { sel := raw4 }
-          sel
-        case (false, true, true) =>
-          val raw2 = resize(out2_toRec.get(Mux(io.mode.actInputs === 1.U, (i % 2).U, (i / 2).U)), productFmt, cType)
-          val raw1 = resize(out1_toRec.get, productFmt, cType)
-          val sel = Wire(new RawFloat(cType.exp, cType.sig))
-          when (io.mode.numOutputs === 1.U) { sel := raw1 } .otherwise { sel := raw2 }
-          sel
-        case (true, false, false) => resize(out4_toRec.get(i), productFmt, cType)
-        case (false, true, false) => resize(out2_toRec.get(Mux(io.mode.actInputs === 1.U, (i % 2).U, (i / 2).U)), productFmt, cType)
-        case (false, false, true) => resize(out1_toRec.get, productFmt, cType)
-        case _ => throw new IllegalStateException("MxFpMul default path: no needsOut*")
+      val recW = cType.recoded
+      // the product cone the output select takes (same when / elsewhen chain as before), as raw and recoded
+      def chain(c4: Option[(RawFloat, UInt)], c2: Option[(RawFloat, UInt)], c1: Option[(RawFloat, UInt)]): (RawFloat, UInt) = {
+        val selRaw = Wire(new RawFloat(cType.exp, cType.sig))
+        val selRec = Wire(UInt(recW.W))
+        def set(x: (RawFloat, UInt)): Unit = { selRaw := x._1; selRec := x._2 }
+        (c4, c2, c1) match {
+          case (Some(r4), Some(r2), Some(r1)) =>
+            when (io.mode.numOutputs === 1.U) { set(r1) }
+              .elsewhen (io.mode.numOutputs === 2.U) { set(r2) }
+              .otherwise { set(r4) }
+          case (Some(r4), None, Some(r1)) => when (io.mode.numOutputs === 1.U) { set(r1) } .otherwise { set(r4) }
+          case (Some(r4), Some(r2), None) => when (io.mode.numOutputs === 2.U) { set(r2) } .otherwise { set(r4) }
+          case (None, Some(r2), Some(r1)) => when (io.mode.numOutputs === 1.U) { set(r1) } .otherwise { set(r2) }
+          case (Some(r4), None, None) => set(r4)
+          case (None, Some(r2), None) => set(r2)
+          case (None, None, Some(r1)) => set(r1)
+          case _ => throw new IllegalStateException("MxFpMul default path: no needsOut*")
+        }
+        (selRaw, selRec)
       }
+      val r4 = if (config.needsOut4) Some(resize(out4_toRec.get(i), productFmt, cType)) else None
+      val r2 = if (config.needsOut2) Some(resize(out2_toRec.get(Mux(io.mode.actInputs === 1.U, (i % 2).U, (i / 2).U)), productFmt, cType)) else None
+      val r1 = if (config.needsOut1) Some(resize(out1_toRec.get, productFmt, cType)) else None
+      val (rawIn, recIn) = chain(r4, r2, r1)
+
       val add = Module(new hardfloatHelper.MxMulAddRecFN(cType.exp, cType.sig))
       add.io.roundingMode := hardfloat.consts.round_near_even
       add.io.detectTininess := hardfloat.consts.tininess_afterRounding
+      val zeroRaw = Wire(new RawFloat(cType.exp, cType.sig))
+      zeroRaw.isNaN := false.B; zeroRaw.isInf := false.B; zeroRaw.isZero := true.B
+      zeroRaw.sign := false.B; zeroRaw.sExp := 0.S; zeroRaw.sig := 0.U
       // A discarded lane adds zero to zero: constant inputs, no toggling in the adder or its pipeline registers.
       val rawG = Wire(new RawFloat(cType.exp, cType.sig))
-      if (config.laneGating && i > 0) {
-        val zeroRaw = Wire(new RawFloat(cType.exp, cType.sig))
-        zeroRaw.isNaN := false.B; zeroRaw.isInf := false.B; zeroRaw.isZero := true.B
-        zeroRaw.sign := false.B; zeroRaw.sExp := 0.S; zeroRaw.sig := 0.U
-        rawG := Mux(laneActive(i), rawIn, zeroRaw)
+      if (config.laneGating && i > 0) rawG := Mux(laneActive(i), rawIn, zeroRaw) else rawG := rawIn
+      val cG = gateU(laneActive(i), recIn_c(i))
+
+      // Zero gating (config.zeroGating). A zero product leaves c unchanged, so the adder is bypassed with the exact
+      // output it would have produced: default NaN if c is NaN, a clean infinity if c is infinite, a zero whose sign is
+      // the AND of the two signs (round-to-nearest-even rule) if c is zero, else c itself. A zero c with a finite or
+      // infinite product returns the product already rounded to the accumulate format (the sum is exact). In both
+      // cases the adder's inputs are held at zero so it does not toggle. NaN products always take the adder.
+      val rawC = rawFloatFromRecFN(cType.exp, cType.sig, cG)
+      val prodZero = rawG.isZero && !rawG.isNaN
+      val byP = if (config.zeroGating) prodZero else false.B
+      val byC = if (config.zeroGating) (!prodZero && rawC.isZero && !rawC.isNaN && !rawG.isNaN) else false.B
+      val byAny = byP || byC
+      add.io.a := pipe(Mux(byAny, zeroRaw, rawG), preAddRegs)
+      add.io.c := pipe(Mux(byAny, 0.U(recW.W), cG), preAddRegs)
+      val addOut = if (addLatency >= 1) RegNext(add.io.out) else add.io.out
+      if (config.zeroGating) {
+        val expW = cType.exp; val sigW = cType.sig
+        val defaultNaN = Cat(0.U(1.W), (BigInt(7) << (expW - 2)).U((expW + 1).W), (BigInt(1) << (sigW - 2)).U((sigW - 1).W))
+        val zeroOut    = Cat(rawG.sign && rawC.sign, 0.U((expW + 1).W), 0.U((sigW - 1).W))
+        val infOut     = Cat(rawC.sign, (BigInt(6) << (expW - 2)).U((expW + 1).W), 0.U((sigW - 1).W))
+        val byPVal = Mux(rawC.isNaN, defaultNaN, Mux(rawC.isZero, zeroOut, Mux(rawC.isInf, infOut, cG)))
+        val lat = preAddRegs + addLatency
+        outputs(i) := Mux(pipe(byP, lat), pipe(byPVal, lat), Mux(pipe(byC, lat), pipe(recIn, lat), addOut))
       } else {
-        rawG := rawIn
+        outputs(i) := addOut
       }
-      add.io.a := pipe(rawG, preAddRegs)
-      add.io.c := pipe(gateU(laneActive(i), recIn_c(i)), preAddRegs)
-      outputs(i) := (if (addLatency >= 1) RegNext(add.io.out) else add.io.out)
     }
   }
 

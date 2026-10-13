@@ -209,6 +209,10 @@ case class MxConfig (
   // mesh discards (lane i >= numOutputs, whose partial sums Mesh.scala zeroes) at constants, so they do not
   // toggle. Results on the lanes the mesh consumes are unchanged; false restores the ungated datapath.
   laneGating:       Boolean                    = true,
+  // Zero gating: when a product is zero (an operand element is zero) the accumulate lane's adder is bypassed
+  // (out = c, with the adder's NaN / zero-sign rules) and its inputs held; when c is zero the rounded product is
+  // passed instead. The 2x2 multipliers also isolate their inputs on a zero operand. Bit-exact; see ZeroGatingEquivSpec.
+  zeroGating:       Boolean                    = true,
 ) {
   require(actFormats.nonEmpty, "MxConfig: actFormats must not be empty")
   require(weiFormats.nonEmpty, "MxConfig: weiFormats must not be empty")

@@ -19,9 +19,10 @@ class MACU(lut: Boolean) extends Module {
   // Instantiate single 2x2 multiplier
   val mult = Module(new Multiplier2x2(lut))
   
-  // Connect weight and activation to multiplier
-  mult.io.weight := io.w(1,0)
-  mult.io.activation := io.act(1,0)
+  // Connect weight and activation to multiplier. The operands are isolated when the unit is disabled (an operand
+  // element is zero, or the lane is unused), so the 2x2 multiplier does not toggle on a product whose result is zero.
+  mult.io.weight := Mux(io.enable, io.w(1,0), 0.U)
+  mult.io.activation := Mux(io.enable, io.act(1,0), 0.U)
 
   // Mode definitions
   val w_m1_mode = io.w_mode === 0.U
