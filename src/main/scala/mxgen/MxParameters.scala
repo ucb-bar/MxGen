@@ -424,6 +424,11 @@ object MxConfig {
     productFormat = MxFormat.Custom(4, 4),
     modesOverride = Some(List(MxPEParams.mode0, MxPEParams.mode8)),
     inActBusWidth = 8, inWeiBusWidth = 8, expAdderWidths = Seq(4, 4, 4, 4))
+  // FP4 x FP4 (mode0) + E3M2 x E3M2 (mode4), no E4M3: the 12b E3M2 lane also carries the 8b FP4 pair.
+  def fp4E3M2 = MxConfig(Set(MxFormat.FP4, MxFormat.FP6_E3M2), Set(MxFormat.FP4, MxFormat.FP6_E3M2),
+    productFormat = MxFormat.Custom(4, 4),
+    modesOverride = Some(List(MxPEParams.mode0, MxPEParams.mode4)),
+    inActBusWidth = 12, inWeiBusWidth = 12, expAdderWidths = Seq(3, 3, 3, 3))
   def e5m2Only = MxConfig(Set(MxFormat.FP8_E5M2), Set(MxFormat.FP8_E5M2),
     productFormat = MxFormat.Custom(4, 4),
     inActBusWidth = 16, inWeiBusWidth = 16, expAdderWidths = Seq(5, 5, 5, 5))
