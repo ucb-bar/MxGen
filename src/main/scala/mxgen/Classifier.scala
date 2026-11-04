@@ -48,7 +48,9 @@ class MxClassifiedFp(format: MxFormat) extends Bundle {
 object requiredPEMode {
   // Per-operand: a sig4 operand (E4M3/E2M3) is quad only when ITS OWN LUT is enabled, else single.
   // weiLutEn defaults to actLutEn so single-lutEn (symmetric) callers are byte-identical.
-  def apply(a: MxTypeBundle, w: MxTypeBundle, actLutEn: Bool = false.B, weiLutEn: Bool = null): mxMode = {
+  // quadSingle: the build has mode12/13 (sig4 quad x sig4 single); else a one-LUT sig4 x sig4 stays mode8
+  def apply(a: MxTypeBundle, w: MxTypeBundle, actLutEn: Bool = false.B, weiLutEn: Bool = null,
+            quadSingle: Boolean = false): mxMode = {
     val weiLut = if (weiLutEn == null) actLutEn else weiLutEn
     val key = Cat(a.sig, w.sig)
     val idx = MuxLookup(key, 0.U) (Seq(
@@ -64,7 +66,10 @@ object requiredPEMode {
     ))
 
     // Each quad arm (9/10/11) gates on the sig4 operand's OWN LUT enable; else -> base idx (2/5/6/7 etc).
-    val idxSel = Mux(actLutEn && weiLut && a.sig === 4.U && w.sig === 4.U, 9.U,
+    val sig44 = a.sig === 4.U && w.sig === 4.U
+    val idx44 = if (quadSingle) Mux(actLutEn && weiLut, 9.U, Mux(actLutEn, 12.U, Mux(weiLut, 13.U, 8.U)))
+                else Mux(actLutEn && weiLut, 9.U, 8.U)
+    val idxSel = Mux(sig44, idx44,
                  Mux(actLutEn && a.sig === 4.U && (w.sig === 2.U || w.sig === 3.U), 10.U,
                  Mux(weiLut && w.sig === 4.U && (a.sig === 2.U || a.sig === 3.U), 11.U, idx)))
 

@@ -309,11 +309,15 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
     val need7 = halfW >= 7
     val s6    = alignToAccSig(base, 6)
     val m7    = if (need7) Some(alignToAccSig(base, 7)) else None
-    m7 match {
+    val sel = m7 match {
       case Some(v7) =>
         Mux(actType.sig === 2.U || weiType.sig === 2.U, s6, v7)
       case None => s6
     }
+    // mode12/13: 4x4 products are 8 bits
+    val pairs2 = config.modesSupported.filter(_.numOutputs == 2).map(m => (m.actWidth, m.weiWidth)).toSet
+    if (halfW >= 8 && pairs2.contains((4, 4))) Mux(actType.sig === 4.U && weiType.sig === 4.U, alignToAccSig(base, 8), sel)
+    else sel
   }
 
   def peMagOut1: UInt = {

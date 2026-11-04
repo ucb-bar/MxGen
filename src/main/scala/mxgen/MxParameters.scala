@@ -160,7 +160,12 @@ object MxPEParams {
     outTotalWidth = 32,
     numOutputs = 4
   )
-  val allModes: List[MxPEParams] = List(mode0, mode1, mode2, mode3, mode4, mode5, mode6, mode7, mode8, mode9, mode10, mode11)
+  // mode12: sig4-quad activation (E4M3/E2M3, LUT) x E4M3-single weight -> 2 full 4x4 products (a0*w0, a1*w0)
+  def mode12 = mode9.copy(weiInputs = 1, numOutputs = 2)
+  // mode13: E4M3-single activation x sig4-quad weight (LUT) -> a0*w0, a0*w1 (mirror of mode12)
+  def mode13 = mode9.copy(actInputs = 1, numOutputs = 2)
+  val allModes: List[MxPEParams] = List(mode0, mode1, mode2, mode3, mode4, mode5, mode6, mode7, mode8, mode9, mode10, mode11,
+    mode12, mode13)
   val mxGemminiConfig: List[MxPEParams] = List(mode0, mode4, mode8)
 
   // The mode slot that handles a given (act significand width, wei significand
@@ -263,6 +268,8 @@ case class MxConfig (
   // Any quad mode with a 4-bit operand (mode9 E4M3xE4M3, or the mixed mode10/mode11 E4M3-quad x small) ->
   // use the LaneMul quad datapath and treat the 4-bit format as dual (2-element). Absent -> the compact
   // 4-MACU MxPE, byte-identical to before.
+  val hasQuadSingle: Boolean = modesSupported.contains(MxPEParams.mode12) || modesSupported.contains(MxPEParams.mode13)
+
   val hasMode9: Boolean = modesSupported.exists(m =>
     m.numOutputs == 4 && (m.actWidth == 4 || m.weiWidth == 4))
 

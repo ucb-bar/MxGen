@@ -215,21 +215,25 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
                           .map(m => (m.actWidth, m.weiWidth)).toSet
     val need2Sig44 = laneHalfW >= 7 && out2Pairs.exists { case (a, w) => a >= 3 && w >= 3 }
     val need2Smaller = laneHalfW >= 6
+    val need2Sig8 = laneHalfW >= 8 && out2Pairs.contains((4, 4))   // mode12/13: 4x4 products
 
     val out2_toRec = if (config.needsOut2) Some(VecInit.tabulate(2) { i =>
       val base = i * laneHalfW
       val out_pe = out_pe2
       val n44 = if (need2Sig44)    Some(normalize(out_pe(base + 6, base), productFmt.sig - 1, 7)) else None
       val nsm = if (need2Smaller)  Some(normalize(out_pe(base + 5, base), productFmt.sig - 1, 6)) else None
+      val n8  = if (need2Sig8)     Some(normalize(out_pe(base + 7, base), productFmt.sig - 1, 8)) else None
       val choices = Seq(n44, nsm).flatten
       require(choices.nonEmpty, "MxFpMul default path: no 2-output product variant configured")
       val fallback = choices.head
-      val rec_exp   = Mux(typeA.sig === 2.U || typeW.sig === 2.U, nsm.map(_._2).getOrElse(fallback._2),
-                                                                  n44.map(_._2).getOrElse(fallback._2))
-      val shift_dir = Mux(typeA.sig === 2.U || typeW.sig === 2.U, nsm.map(_._3).getOrElse(fallback._3),
-                                                                  n44.map(_._3).getOrElse(fallback._3))
-      val rec_sig   = Mux(typeA.sig === 2.U || typeW.sig === 2.U, nsm.map(_._1).getOrElse(fallback._1),
-                                                                  n44.map(_._1).getOrElse(fallback._1))
+      def pick2[X <: chisel3.Data](f: ((UInt, UInt, Bool)) => X): X = {
+        val small = Mux(typeA.sig === 2.U || typeW.sig === 2.U, nsm.map(f).getOrElse(f(fallback)),
+                                                                n44.map(f).getOrElse(f(fallback)))
+        n8.map(v => Mux(typeA.sig === 4.U && typeW.sig === 4.U, f(v), small)).getOrElse(small)
+      }
+      val rec_exp   = pick2(_._2)
+      val shift_dir = pick2(_._3)
+      val rec_sig   = pick2(_._1)
       // act-single flush check must read sums(i) (a0*w1), not the raw quad sums(2i)=a0*w0; else a tiny p1 fails to flush and wraps.
       val esIdx = Mux(io.mode.actInputs === 1.U, i.U, (i * 2).U)
       MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(i * 2),
