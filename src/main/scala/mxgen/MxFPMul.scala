@@ -272,7 +272,8 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
         (selRaw, selRec)
       }
       val r4 = if (config.needsOut4) Some(resize(out4_toRec.get(i), productFmt, cType)) else None
-      val r2 = if (config.needsOut2) Some(resize(out2_toRec.get(Mux(io.mode.actInputs === 1.U, (i % 2).U, (i / 2).U)), productFmt, cType)) else None
+      // 2-output modes keep both products on lanes 0,1 (the mesh drops lanes >= numOutputs)
+      val r2 = if (config.needsOut2) Some(resize(out2_toRec.get(i % 2), productFmt, cType)) else None
       val r1 = if (config.needsOut1) Some(resize(out1_toRec.get, productFmt, cType)) else None
       val (rawIn, recIn) = chain(r4, r2, r1)
 
