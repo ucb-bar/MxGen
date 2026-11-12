@@ -122,14 +122,14 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
   // Dual (2-per-bus) path carries every format on a mode9 build (E4M3 included, for the 4-wide quad mode9).
   // The single (1-per-bus) path also stays for E4M3 (sig4,exp4) so E4M3-single (mode8, no lut) still decodes
   // on a mode9 build; E2M3 (sig4,exp2) is quad-only so it is NOT on the single path. Runtime mode picks.
-  val dualPred: MxFormat => Boolean   = if (config.hasMode9) (_ => true)
-                                        else (_.sigWidth < 4)
-  val singlePred: MxFormat => Boolean = if (config.hasMode9) (f => f.sigWidth >= 4 && f.expWidth >= 4)
-                                        else (_.sigWidth >= 4)
-  val dualActFormats   = config.actFormats.filter(dualPred).toSeq.sortBy(_.bitWidth)
-  val singleActFormats = config.actFormats.filter(singlePred).toSeq.sortBy(_.bitWidth)
-  val dualWeiFormats   = config.weiFormats.filter(dualPred).toSeq.sortBy(_.bitWidth)
-  val singleWeiFormats = config.weiFormats.filter(singlePred).toSeq.sortBy(_.bitWidth)
+  // Per operand (actQuad4 / weiQuad4): a mode13 build decodes the weight dual and the activation single.
+  def dualPred(quad4: Boolean): MxFormat => Boolean   = if (quad4) (_ => true) else (_.sigWidth < 4)
+  def singlePred(quad4: Boolean): MxFormat => Boolean =
+    if (quad4) (f => f.sigWidth >= 4 && f.expWidth >= 4) else (_.sigWidth >= 4)
+  val dualActFormats   = config.actFormats.filter(dualPred(config.actQuad4)).toSeq.sortBy(_.bitWidth)
+  val singleActFormats = config.actFormats.filter(singlePred(config.actQuad4)).toSeq.sortBy(_.bitWidth)
+  val dualWeiFormats   = config.weiFormats.filter(dualPred(config.weiQuad4)).toSeq.sortBy(_.bitWidth)
+  val singleWeiFormats = config.weiFormats.filter(singlePred(config.weiQuad4)).toSeq.sortBy(_.bitWidth)
 
   // --- Activation classifier -------------------------------------------------
   {
@@ -328,22 +328,25 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
 
   val peIsNaN = nanA || nanW
 
+  // 2-output product on lane i: i/2 when the build has 4 lanes (product p on lanes 2p, 2p+1), else i (2-lane build).
+  def p2Of(i: Int): Int = if (config.numActiveOutputLanes >= 4) i / 2 else i
   for (i <- 0 until config.numActiveOutputLanes) {
+    val p2 = p2Of(i)
     val peMag4 = if (config.needsOut4) Some(peMagOut4(i))         else None
-    val peMag2 = if (config.needsOut2) Some(peMagOut2(i / 2))     else None
+    val peMag2 = if (config.needsOut2) Some(peMagOut2(p2))        else None
     val peMag1 = if (config.needsOut1) Some(peMagOut1)            else None
     val peExp4 = if (config.needsOut4) Some(out_e((i + 1) * (totalAdderWidth / 4) - 1, i * (totalAdderWidth / 4))) else None
-    val peExp2 = if (config.needsOut2) Some(out_e((i / 2) * (totalAdderWidth / 2) + outExp, (i / 2) * (totalAdderWidth / 2))) else None
+    val peExp2 = if (config.needsOut2) Some(out_e(p2 * (totalAdderWidth / 2) + outExp, p2 * (totalAdderWidth / 2))) else None
     val peExp1 = if (config.needsOut1) Some(out_e(outExp, 0))     else None
     val peSign4 = out_signs(i)
     // 2-output sign: product p=(i/2) maps to a different standard-quad sign slot per mode.
     // act-single (mode6/7): products are a0*w0, a0*w1 -> slots 0,1 (out_signs(p)).
     // wei-single (mode2/5): products are a0*w0, a1*w0 -> slots 0,2 (out_signs(2p)).
     // The magnitude/exp already follow p (peMagOut2(i/2)); only the sign slot differs, so key it on actInputs.
-    val peSign2 = Mux(modeWire.actInputs === 1.U, out_signs(i / 2), out_signs((i / 2) * 2))
+    val peSign2 = Mux(modeWire.actInputs === 1.U, out_signs(p2), out_signs(p2 * 2))
     val peSign1 = out_signs(0)
     val peZero4 = in_a_mask(i / 2) || in_w_mask(i % 2)
-    val peZero2 = in_a_mask(i / 2) || in_w_mask((i / 2) % 2)
+    val peZero2 = in_a_mask(p2) || in_w_mask(p2 % 2)
     val peZero1 = in_a_mask(0) || in_w_mask(0)
 
     val (peMag, peExp, peSign, peZero): (UInt, UInt, Bool, Bool) = config.fixedNumOutputs match {

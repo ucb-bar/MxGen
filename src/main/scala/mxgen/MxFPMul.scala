@@ -236,9 +236,10 @@ class MxFpMul(val config: MxConfig, lut: Boolean, val latency: Int = 0) extends 
       val rec_sig   = pick2(_._1)
       // act-single flush check must read sums(i) (a0*w1), not the raw quad sums(2i)=a0*w0; else a tiny p1 fails to flush and wraps.
       val esIdx = Mux(io.mode.actInputs === 1.U, i.U, (i * 2).U)
-      MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(i * 2),
-        Mux(!shift_dir, peExpW(i * 2) -% rec_exp, peExpW(i * 2) +% rec_exp),
-        rec_sig, peIsNaN, peZeroW(i * 2) || isUnderflow(expSignedW(esIdx), rec_exp, shift_dir))
+      val ln = if (config.numActiveOutputLanes >= 4) i * 2 else i   // core lane holding product i (see MxFpMulCore p2Of)
+      MxPEOutToRaw(productFmt.exp, productFmt.sig, out_signs(ln),
+        Mux(!shift_dir, peExpW(ln) -% rec_exp, peExpW(ln) +% rec_exp),
+        rec_sig, peIsNaN, peZeroW(ln) || isUnderflow(expSignedW(esIdx), rec_exp, shift_dir))
     }) else None
 
     val out1_toRec = if (config.needsOut1) Some({

@@ -270,22 +270,27 @@ case class MxConfig (
   // 4-MACU MxPE, byte-identical to before.
   val hasQuadSingle: Boolean = modesSupported.contains(MxPEParams.mode12) || modesSupported.contains(MxPEParams.mode13)
 
-  val hasMode9: Boolean = modesSupported.exists(m =>
+  private val quad4Mode: Boolean = modesSupported.exists(m =>
     m.numOutputs == 4 && (m.actWidth == 4 || m.weiWidth == 4))
+  // Per operand: sig4 formats ride the dual (2-per-lane) decode. mode12 adds it for act only, mode13 for wei only.
+  val actQuad4: Boolean = quad4Mode || modesSupported.contains(MxPEParams.mode12)
+  val weiQuad4: Boolean = quad4Mode || modesSupported.contains(MxPEParams.mode13)
+  // mode12/13 are mode9 with one side single: they need the same quad datapath.
+  val hasMode9: Boolean = actQuad4 || weiQuad4
 
   // Decoded exponent-bus width, decoupled from the raw operand storage width. Max of the historical
   // (inBusWidth - inPE_totalWidth) -- preserves existing configs -- and what the formats need: dual =
   // 2*maxExp of dual formats, single = maxExp of single formats. Lets E5M2 (exp5) coexist with mode9.
-  private def dualExpNeed(fs: Set[MxFormat]): Int = {
-    val dual = if (hasMode9) fs else fs.filter(_.sigWidth < 4)
+  private def dualExpNeed(fs: Set[MxFormat], quad4: Boolean): Int = {
+    val dual = if (quad4) fs else fs.filter(_.sigWidth < 4)
     if (dual.isEmpty) 0 else 2 * dual.map(_.expWidth).max
   }
-  private def sngExpNeed(fs: Set[MxFormat]): Int = {
-    val sng = if (hasMode9) Set.empty[MxFormat] else fs.filter(_.sigWidth >= 4)
+  private def sngExpNeed(fs: Set[MxFormat], quad4: Boolean): Int = {
+    val sng = if (quad4) Set.empty[MxFormat] else fs.filter(_.sigWidth >= 4)
     if (sng.isEmpty) 0 else sng.map(_.expWidth).max
   }
-  val inActExpBusWidth: Int = Seq(inActBusWidth - inPE_act_totalWidth, dualExpNeed(actFormats), sngExpNeed(actFormats)).max
-  val inWeiExpBusWidth: Int = Seq(inWeiBusWidth - inPE_wei_totalWidth, dualExpNeed(weiFormats), sngExpNeed(weiFormats)).max
+  val inActExpBusWidth: Int = Seq(inActBusWidth - inPE_act_totalWidth, dualExpNeed(actFormats, actQuad4), sngExpNeed(actFormats, actQuad4)).max
+  val inWeiExpBusWidth: Int = Seq(inWeiBusWidth - inPE_wei_totalWidth, dualExpNeed(weiFormats, weiQuad4), sngExpNeed(weiFormats, weiQuad4)).max
 
   val fixedActInputs: Option[Int] = {
     val s = modesSupported.map(_.actInputs).toSet
