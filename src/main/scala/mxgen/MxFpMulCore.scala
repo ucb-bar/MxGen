@@ -78,7 +78,9 @@ class MxFpMulCore(val config: MxConfig, lut: Boolean) extends Module {
       val nz     = if (f.sigWidth > 1) rawSig.orR else false.B
       val isZero = (rawExp === 0.U) && !nz
       val isSub  = (rawExp === 0.U) && nz
-      val isNaN  = if (w == 8) rawExp.andR && nz else false.B
+      // OCP E4M3: only S.1111.111 is NaN (exp 15 with mantissa 1-6 is finite, up to 448)
+      val isNaN  = if (w == 8 && f.expWidth == 4) rawExp.andR && rawSig.andR
+                   else if (w == 8) rawExp.andR && nz else false.B
       val adjExp: UInt =
         (Mux(isSub, 1.U(f.expWidth.W), rawExp) -% f.bias.U(f.expWidth.W)) -% 1.U(1.W)
       (sign, rawSig, isNaN, isZero, isSub, adjExp)
